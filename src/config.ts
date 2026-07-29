@@ -26,6 +26,11 @@ export const TUNING = {
   PLAYER_HP: 100,
   PLAYER_SPEED: 7.0, // faster than a grunt (3.4), SLOWER than a runner (5.2) — see DESIGN §5
   PLAYER_R: 0.6,
+  PLAYER_RESPONSE: 30, // velocity lerp rate toward the input heading, as 1 - exp(-k*dt).
+  // Not in DESIGN — it is a feel constant, found by driving the character (ROADMAP M1). High enough
+  // that the character reads as instantly responsive, low enough that a hard reverse has weight
+  // instead of teleporting the model through a 180. Below ~12 it feels like ice; above ~40 the
+  // smoothing stops being perceptible and this may as well be a direct velocity assignment.
   PLAYER_IFRAMES: 0.6, // seconds of invulnerability after taking a hit
   PICKUP_R: 3.0, // XP orb magnet radius
 

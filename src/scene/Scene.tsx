@@ -9,10 +9,11 @@ import { COLORS, FOG_DENSITY } from '../config';
 import { Ground } from './Ground';
 import { Obstacles } from './Obstacles';
 import { CameraRig } from './CameraRig';
-import { Probe } from './Probe';
+import { GameLoop } from './GameLoop';
+import { Player } from './Player';
 
 export function Scene() {
-  // What the camera follows. M0 drives it from Probe; M1 will drive it from the player. Held as a
+  // What the camera follows — written by GameLoop from the player's position each tick. Held as a
   // ref, not state, because it changes every frame — see the hot-path rule in ARCHITECTURE §3.
   const focus = useRef(new THREE.Vector3());
 
@@ -34,7 +35,10 @@ export function Scene() {
 
       <Ground />
       <Obstacles />
-      <Probe focus={focus} />
+
+      {/* GameLoop is the one tick and runs at priority -1, so everything below reads fresh state. */}
+      <GameLoop focus={focus} />
+      <Player />
       <CameraRig focus={focus} />
     </>
   );

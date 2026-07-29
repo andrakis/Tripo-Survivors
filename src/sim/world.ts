@@ -57,4 +57,35 @@ export function overlapsObstacle(x: number, z: number, radius: number): boolean 
   return false;
 }
 
+/**
+ * Push a circle of `radius` out of every obstacle it overlaps, along the **axis of least
+ * penetration** (a minimum-translation-vector resolve). Returns the corrected pair.
+ *
+ * Least-penetration is what makes a prop feel like a wall you slide along rather than a magnet: a
+ * body pressed into the long face of the East Wall is pushed straight back out of that face, and
+ * its motion along the wall survives untouched. Picking any other axis would kill the tangential
+ * component and the player would stick.
+ *
+ * Every overlapping obstacle is resolved, not just the first — props sit close enough (the Pillar
+ * Ring) that a single-obstacle resolve can push a body straight into its neighbour.
+ *
+ * The swarm reuses this shape in M2 (ARCHITECTURE §4.3 step 5), but against a 3×3 grid lookup
+ * rather than this 14-box linear scan.
+ */
+export function resolveObstacles(x: number, z: number, radius: number): [number, number] {
+  for (const o of OBSTACLES) {
+    const dx = x - o.x;
+    const penX = o.hx + radius - Math.abs(dx);
+    if (penX <= 0) continue;
+    const dz = z - o.z;
+    const penZ = o.hz + radius - Math.abs(dz);
+    if (penZ <= 0) continue;
+    // Exactly on an axis (dx === 0) is degenerate; break the tie toward +, which is stable because
+    // the body only ever arrives there with velocity that will carry it clear next tick anyway.
+    if (penX < penZ) x += dx >= 0 ? penX : -penX;
+    else z += dz >= 0 ? penZ : -penZ;
+  }
+  return [x, z];
+}
+
 export const WORLD_SIZE = { x: CFG.WORLD_X, z: CFG.WORLD_Z } as const;

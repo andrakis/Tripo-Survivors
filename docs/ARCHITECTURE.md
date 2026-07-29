@@ -37,6 +37,7 @@ We do **not** copy Breach's COOP/COEP headers — there's no SharedArrayBuffer h
 src/
   config.ts            CFG (world/grid dims) + TUNING (every tunable number). One file, ~150 lines.
   game.ts              owns ALL simulation state; one step(dt). The spine — read this first.
+  input.ts             keyboard + thumbstick -> one normalised vector. Touches `window`, so NOT in sim/.
   sim/                 pure TypeScript. No THREE import anywhere in this folder.
     grid.ts              counting-sort spatial grid            (ported from Breach)
     flow.ts              cost field + SPFA solve + gradient     (ported from Breach)
@@ -51,6 +52,7 @@ src/
   store.ts             zustand: human-rate UI state ONLY
   scene/               R3F components. Read state, write matrices. No game logic.
     Scene · Ground · Obstacles · Swarm · Player · Projectiles · Orbs · AuraRing · CameraRig · FpsMeter
+    GameLoop             the ONE useFrame that runs game.step(), at priority -1 (§6)
   ui/                  Hud · LevelUp · TouchControls · GameOver
 ```
 
@@ -265,9 +267,14 @@ decaying hit-flash timer read only by the renderer.
 
 ## 6. The tick
 
-`game.step(dt)` runs exactly this order, every frame, from a single `useFrame` at
-the root of the scene. `dt` is clamped to 50 ms so a background tab doesn't
-teleport the swarm on return.
+`game.step(dt)` runs exactly this order, every frame, from a single `useFrame` in
+[scene/GameLoop.tsx](../src/scene/GameLoop.tsx). `dt` is clamped to 50 ms so a
+background tab doesn't teleport the swarm on return.
+
+That `useFrame` takes priority **-1**, so R3F sorts it ahead of every renderer's and
+the same frame's matrix writes read state that is already current. A *negative*
+priority only reorders; a positive one would take over the render loop and leave the
+canvas blank.
 
 ```
  1. input.sample()          keyboard + touch -> one normalised vector
@@ -386,13 +393,25 @@ so they run in plain node with no WebGL, no canvas, no mocks:
 - **Progression** — a scripted kill sequence produces a deterministic level and
   unlock set.
 
-**Headless browser check.** Playwright (already installed, no sudo needed).
-Capture via **raw CDP `Page.captureScreenshot`** — `page.screenshot()` hangs on
-font-wait in this environment. Asserts: canvas renders, zero console errors, enemy
-count climbs off zero, HUD XP advances after a scripted run.
+**Browser check.** Playwright (already installed, no sudo needed). Two scripts:
 
-Note that headless runs under software rendering, where framerate is a genuine signal
-— a sudden collapse there is usually an instance-count bug (§5), not a slow machine.
+- `scripts/shot.mjs` (`npm run shot`) — headless render check. Canvas renders, zero
+  console errors, one screenshot.
+- `scripts/drive.mjs` (`npm run verify`) — **headed**, and the one that matters. It
+  drives real key and pointer events and asserts against **simulation truth**, read
+  through a dev-only `window.__game` seam ([src/game.ts](../src/game.ts)), rather
+  than inferring anything from pixels: that checks the whole input path actually
+  reaches the sim, which is what a screenshot cannot tell you. It also runs the touch
+  path in a phone-sized viewport with `?touch=1`.
+
+Capture in both goes through **raw CDP `Page.captureScreenshot`** — `page.screenshot()`
+hangs on font-wait in this environment. In headed mode, clip the capture to the
+emulated viewport; Chromium's window is larger than the page and an unclipped shot is
+padded with dead space.
+
+Headless runs under SwiftShader software rendering, so its framerate is a genuine
+signal for *instance-count* bugs (§5) but useless as an absolute — anything about
+frame budget has to be read from the headed run.
 
 **Manual.** `npm run dev` on 5182: a full run to death on desktop, then the same in a
 touch-emulated viewport.

@@ -10,7 +10,8 @@ next. Survive the ramp.
 It ships playable with primitive cubes and cones. Drop your own Tripo `.glb` into
 `public/models/`, name it in one file, and the cubes become monsters.
 
-> **Status: M0 (scaffold + arena) done, 2026-07-29.** See [ROADMAP.md](docs/ROADMAP.md).
+> **Status: M1 (player + controls) done, 2026-07-29.** You can drive the character
+> around the arena; the swarm arrives in M2. See [ROADMAP.md](docs/ROADMAP.md).
 
 ---
 
@@ -81,9 +82,10 @@ npm run dev        # http://localhost:5182
 | `npm run preview` | serve the build on 4182 |
 | `npm run lint` | `tsc --noEmit` |
 | `npm test` | vitest over `src/sim/` |
+| `npm run verify` | drives the game in a **headed** browser and asserts against sim truth |
 
-**Controls:** WASD or arrows on desktop, virtual thumbstick on touch. Attacks are
-automatic. That's all of them.
+**Controls:** WASD or arrows on desktop, virtual thumbstick on touch — add `?touch=1`
+to force the thumbstick on a desktop. Attacks are automatic. That's all of them.
 
 ## Stack
 

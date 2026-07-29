@@ -7,7 +7,7 @@ a game; M5 makes it look like one; M6 is the payload the project was built to de
 See [DESIGN.md](DESIGN.md) for the systems these milestones serve and
 [ARCHITECTURE.md](ARCHITECTURE.md) for how they're built.
 
-**Status:** M0 done 2026-07-29. M1 (player + controls) is next.
+**Status:** M0 and M1 done 2026-07-29. M2 (the swarm) is next.
 
 ---
 
@@ -41,9 +41,9 @@ half a day, not a week.
 
 **Done when:** `npm run dev` shows the arena at a locked 60 fps and the camera
 follows a hard-coded moving target smoothly. **Verified** for rendering, follow, and
-zero console errors; the 60 fps half is **not** verified — headless here runs under
-SwiftShader software rendering (~25 fps at 1280×800), so framerate needs a look on
-real GPU hardware.
+zero console errors. The 60 fps half was left open because headless here runs under
+SwiftShader software rendering (~25 fps at 1280×800) — **closed during M1**: the
+headed `npm run verify` run reports a locked **60 fps** on GPU hardware.
 
 ### Two things M0 cost more than expected
 
@@ -61,24 +61,57 @@ Both are the kind of bug that reads as "the feature isn't implemented":
   the player in value — breaking the one rule the whole look rests on. The stage is
   meant to be underexposed: ambient 0.55, directional 1.5.
 
-## Milestone 1 — Player + controls ⬜ not started
+## Milestone 1 — Player + controls ✅ done (2026-07-29)
 
 **Why here:** the control feel gates every balance decision after it. Speed values in
 [DESIGN.md §5](DESIGN.md) are guesses until someone drives the character.
 
-- [ ] `sim/player.ts` — one normalised input vector in; position, facing, HP,
+- [x] `sim/player.ts` — one normalised input vector in; position, facing, HP,
       i-frame timer out. **No THREE import** ([ARCHITECTURE.md §2.1](ARCHITECTURE.md)).
-- [ ] Keyboard producer: WASD/arrows, normalised so diagonals aren't faster.
-- [ ] `ui/TouchControls.tsx` — virtual thumbstick, left half of screen, writing the
+- [x] `game.ts` — the spine arrives here rather than in M2, because the moment there
+      are two things to advance (input, player) the tick order from
+      [ARCHITECTURE §6](ARCHITECTURE.md) needs somewhere to live. Steps 3–12 are
+      commented in place so later milestones slot in rather than renegotiate.
+- [x] Keyboard producer (`src/input.ts`): WASD/arrows, normalised so diagonals aren't
+      faster, keyed on `event.code` so the WASD *cluster* survives AZERTY, and cleared
+      on `blur` so alt-tab doesn't leave the character running.
+- [x] `ui/TouchControls.tsx` — virtual thumbstick, left half of screen, writing the
       *same* vector. Gated on `(pointer: coarse)` plus a `?touch=1` override.
-      Nothing to reuse in the sibling repos; ~60 lines, written fresh.
-- [ ] `scene/Player.tsx` — reads `models/registry.ts` for geometry/scale/offset.
-- [ ] `models/registry.ts` — the full `ACTORS` table with primitives (stage 1).
-- [ ] World-bounds clamp; out-of-bounds ground band visible.
+      Floating origin, knob moved by writing `transform` on a ref rather than through
+      React state.
+- [x] `scene/Player.tsx` — reads `models/registry.ts` for geometry/scale/offset.
+- [x] `scene/GameLoop.tsx` — the single tick, at `useFrame` priority **-1**.
+- [x] World-bounds clamp; out-of-bounds ground band visible.
+- [x] `sim/world.ts` — `resolveObstacles`, a least-penetration MTV. In scope because
+      [DESIGN §9](DESIGN.md) has the player collide with props, and M2's swarm reuses
+      the same resolve against a grid lookup.
+- [x] `scripts/drive.mjs` (`npm run verify`) — 16 assertions driven through a **headed**
+      browser against sim truth via a dev-only `window.__game`.
+- [x] Tests: 17 vitest cases over movement, bounds, obstacles, facing, i-frames and the
+      input producers.
 
 **Done when:** keyboard and touch drive the character identically, movement feels
 good against the grid, and the character is visibly a registry entry — swapping its
-primitive changes what you see with no other edit.
+primitive changes what you see with no other edit. **All verified** — 16/16 browser
+checks at a locked 60 fps on GPU hardware, `lint`/`build`/`test` clean.
+
+### What M1 learned
+
+- **`PLAYER_RESPONSE` is a real tunable, and it isn't in DESIGN.** Direct velocity
+  assignment makes a hard reverse teleport the model through a 180°; anything below
+  ~12 feels like ice. 20, as `1 - exp(-k·dt)` so it survives a 144 Hz display.
+- **Facing must come from input, not velocity.** Velocity is smoothed, so deriving
+  facing from it lags the key press — and from M3 the Lance fires along facing, where
+  that lag reads as the weapon being broken rather than the model turning slowly.
+  Facing is also *held* on release, so stopping to let the aura work doesn't snap the
+  character back to whatever angle the decaying velocity happened to land on.
+- **Obstacles have to resolve on the axis of least penetration.** Any other axis kills
+  the tangential component and the player sticks to the East Wall instead of sliding
+  along it.
+- **Props fully occlude the player.** An 8-unit pillar from a 45° camera hides a
+  1.7-unit character completely, which breaks [DESIGN §12](DESIGN.md) rule 1 outright.
+  Not fixed here — it is a look problem, and it belongs in **M5**'s readability pass
+  (shorter props, or the player drawn on top through a depth-test-off pass).
 
 ## Milestone 2 — The swarm ⬜ not started
 
