@@ -11,6 +11,7 @@ import { Obstacles } from './Obstacles';
 import { CameraRig } from './CameraRig';
 import { GameLoop } from './GameLoop';
 import { Player } from './Player';
+import { Swarm } from './Swarm';
 
 export function Scene() {
   // What the camera follows — written by GameLoop from the player's position each tick. Held as a
@@ -38,6 +39,7 @@ export function Scene() {
 
       {/* GameLoop is the one tick and runs at priority -1, so everything below reads fresh state. */}
       <GameLoop focus={focus} />
+      <Swarm />
       <Player />
       <CameraRig focus={focus} />
     </>

@@ -15,6 +15,11 @@ export const CFG = {
   // lets a single cells-per-world ratio serve both axes. Keep it that way.
   GRID_W: 128,
   GRID_H: 128,
+
+  // What the camera shows, in world units (DESIGN §12). It follows from CAM_OFFSET and CAM_FOV, and
+  // is restated here because the spawn director needs it and sim/ may not import a camera.
+  VIEW_W: 40,
+  VIEW_H: 26,
 } as const;
 
 export const HALF_X = CFG.WORLD_X / 2;
@@ -66,6 +71,10 @@ export const TUNING = {
   SPAWN_BASE: 1.5, // enemies/sec at t=0
   SPAWN_RAMP: 22, // rate = SPAWN_BASE + t / SPAWN_RAMP
   SPAWN_RING_MULT: 1.35, // spawn radius as a multiple of the visible half-extent (always offscreen)
+  SPAWN_TRIES: 8, // rejection-sample attempts per spawn before giving up for this tick
+  TIER_RAMP: 30, // seconds for a tier to reach full weight after its entry time
+  GRUNT_DECAY: 90, // seconds over which the grunt's share falls once other tiers are in play
+  ELITE_INTERVAL: 45, // elites spawn on their OWN timer, not out of the general budget (DESIGN §7.2)
 
   // --- progression (DESIGN §8) ---
   XP_BASE: 5,
@@ -83,6 +92,22 @@ export const TUNING = {
 
   STORE_HZ: 10, // how often per second sim state is pushed into the React store
 } as const;
+
+// The four enemy tiers, straight out of DESIGN §7.1. Order IS identity: an enemy's `tier` field is
+// an index into this array, so inserting a tier in the middle renumbers the live swarm. Append only.
+//
+// `actor` names the models/registry.ts entry that draws the tier — the seam a viewer replaces.
+export const TIERS = [
+  { actor: 'grunt', hp: 10, speed: 3.4, contact: 6, xp: 1, entersAt: 0, weight: 10 },
+  { actor: 'runner', hp: 6, speed: 5.2, contact: 4, xp: 2, entersAt: 60, weight: 6 },
+  { actor: 'brute', hp: 60, speed: 2.2, contact: 18, xp: 6, entersAt: 120, weight: 5 },
+  // Elite weight is 0 on purpose: it never comes out of the general spawn budget, it arrives on
+  // ELITE_INTERVAL after `entersAt`. A tier this expensive has to be paced, not rolled for.
+  { actor: 'elite', hp: 400, speed: 1.8, contact: 30, xp: 40, entersAt: 240, weight: 0 },
+] as const;
+
+export const TIER_COUNT = TIERS.length;
+export const ELITE_TIER = 3;
 
 // docs/ART-STYLE.md. The stage is desaturated and dim; all chroma is spent on the cast.
 export const COLORS = {

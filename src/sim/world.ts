@@ -1,12 +1,17 @@
-// The arena: bounds and the static obstacle list.
+// The arena: bounds, the static obstacle list, the world<->cell mapping, and the flow cost field.
 //
 // No THREE import — see docs/ARCHITECTURE.md §2.1. Obstacles are axis-aligned boxes because the
-// swarm resolves them with an axis-of-least-penetration MTV (M2), which wants an AABB and nothing
+// swarm resolves them with an axis-of-least-penetration MTV, which wants an AABB and nothing
 // fancier. `height` is purely visual.
-//
-// M2 adds the flow cost-field stamping here; today this is data plus two helpers.
 
-import { CFG, HALF_X, HALF_Z } from '../config';
+import { CFG, CELLS_PER_WORLD, HALF_X, HALF_Z, TUNING } from '../config';
+
+/** A mutable 2D point. Every helper here writes into one rather than returning a fresh pair: the
+ *  swarm calls them once per enemy per tick, and 400 tuples a frame is 24,000 objects a second. */
+export interface Vec2 {
+  x: number;
+  z: number;
+}
 
 export interface Obstacle {
   /** centre on X */
@@ -42,11 +47,12 @@ export const OBSTACLES: readonly Obstacle[] = [
   { x: -12, z: 58, hx: 3.0, hz: 3.0, height: 4.5 },
 ];
 
-/** Clamp a point inside the arena, leaving `radius` of margin. Mutates nothing; returns the pair. */
-export function clampToWorld(x: number, z: number, radius: number): [number, number] {
+/** Clamp a point inside the arena, leaving `radius` of margin, writing the result into `out`. */
+export function clampToWorld(out: Vec2, x: number, z: number, radius: number): void {
   const mx = HALF_X - radius;
   const mz = HALF_Z - radius;
-  return [Math.min(mx, Math.max(-mx, x)), Math.min(mz, Math.max(-mz, z))];
+  out.x = Math.min(mx, Math.max(-mx, x));
+  out.z = Math.min(mz, Math.max(-mz, z));
 }
 
 /** True if (x, z) is inside any obstacle expanded by `radius`. Linear scan — 14 boxes. */
@@ -69,10 +75,11 @@ export function overlapsObstacle(x: number, z: number, radius: number): boolean 
  * Every overlapping obstacle is resolved, not just the first — props sit close enough (the Pillar
  * Ring) that a single-obstacle resolve can push a body straight into its neighbour.
  *
- * The swarm reuses this shape in M2 (ARCHITECTURE §4.3 step 5), but against a 3×3 grid lookup
- * rather than this 14-box linear scan.
+ * Both the player and every enemy resolve through this one function (ARCHITECTURE §4.3 step 5).
+ * Breach uses a 3×3 block-grid lookup here because it has thousands of blocks; 14 boxes is faster
+ * to scan linearly than to index, and immeasurably easier to read.
  */
-export function resolveObstacles(x: number, z: number, radius: number): [number, number] {
+export function resolveObstacles(out: Vec2, x: number, z: number, radius: number): void {
   for (const o of OBSTACLES) {
     const dx = x - o.x;
     const penX = o.hx + radius - Math.abs(dx);
@@ -85,7 +92,53 @@ export function resolveObstacles(x: number, z: number, radius: number): [number,
     if (penX < penZ) x += dx >= 0 ? penX : -penX;
     else z += dz >= 0 ? penZ : -penZ;
   }
-  return [x, z];
+  out.x = x;
+  out.z = z;
+}
+
+// --- world <-> flow-cell mapping -----------------------------------------------------------------
+// The arena owns this because it owns what a world coordinate MEANS; flow.ts just solves on the
+// grid it's handed. Both axes share one ratio because the cells are square (config.ts CFG).
+
+export function cellX(x: number): number {
+  const c = ((x + HALF_X) * CELLS_PER_WORLD) | 0;
+  return c < 0 ? 0 : c >= CFG.GRID_W ? CFG.GRID_W - 1 : c;
+}
+
+export function cellZ(z: number): number {
+  const c = ((z + HALF_Z) * CELLS_PER_WORLD) | 0;
+  return c < 0 ? 0 : c >= CFG.GRID_H ? CFG.GRID_H - 1 : c;
+}
+
+/**
+ * The static flow cost field: base 1 everywhere, plus `OBSTACLE_COST` over each prop's footprint
+ * and a one-cell skirt. Built ONCE — nothing in this game moves a prop — and cached by flow.ts.
+ *
+ * **Expensive, not impassable.** This is the load-bearing property of the whole pathing system: no
+ * cell is ever excluded, so the distance solve labels every cell, the gradient is defined
+ * everywhere, and there is no dead zone where an enemy standing in the wrong place has nowhere to
+ * go. A crowd presses AROUND a rock because through it costs 40× more, not because a wall stopped
+ * it — and that is also why the crowd re-merges on the far side instead of stalling against it.
+ *
+ * The one-cell skirt keeps the cheap route a body-width clear of the prop, so the flow doesn't
+ * steer enemies into the face of a rock and leave the obstacle MTV to do all the work.
+ */
+export function buildCostField(): Float32Array {
+  const W = CFG.GRID_W;
+  const H = CFG.GRID_H;
+  const cost = new Float32Array(W * H).fill(1);
+
+  for (const o of OBSTACLES) {
+    const x0 = Math.max(0, cellX(o.x - o.hx) - 1);
+    const x1 = Math.min(W - 1, cellX(o.x + o.hx) + 1);
+    const z0 = Math.max(0, cellZ(o.z - o.hz) - 1);
+    const z1 = Math.min(H - 1, cellZ(o.z + o.hz) + 1);
+    for (let z = z0; z <= z1; z++) {
+      for (let x = x0; x <= x1; x++) cost[z * W + x] += TUNING.OBSTACLE_COST;
+    }
+  }
+
+  return cost;
 }
 
 export const WORLD_SIZE = { x: CFG.WORLD_X, z: CFG.WORLD_Z } as const;

@@ -150,17 +150,46 @@ while q:
         if nd < dist[ni]:  dist[ni] = nd;  q.push(ni)
 ```
 
-Then `fillFlowFromDist` converts distance to a per-cell direction using **central
-differences**, not "step to the lowest 4-neighbour":
+Then `fillFlowFromDist` converts distance to a per-cell direction with a **one-sided
+downhill difference** per axis — not "step to the lowest 4-neighbour", and not Breach's
+plain central difference either:
 
 ```
-fx = dist[left] - dist[right]
-fz = dist[down] - dist[up]      normalise; fall back to steepest single step if degenerate
+down(n) = max(0, dist[centre] - dist[n])     # 0 if n is uphill
+fx = down(right) - down(left)
+fz = down(up)    - down(down)                # normalise; steepest single step if degenerate
 ```
 
-Keep this verbatim. Snapping to the lowest neighbour quantises every heading to 8
-directions and the crowd visibly marches in axis-aligned columns. Central differences
-give a continuous direction and the crowd slides in at any angle.
+**Never snap to the lowest neighbour.** It quantises every heading to 8 directions and
+the crowd visibly marches in axis-aligned columns — the most recognisable "this is a
+grid" artifact there is. A difference-based gradient gives a continuous direction and
+the crowd slides in at any angle.
+
+**And this is where we diverge from Breach**, which uses `fx = dL - dR` with no
+floor ([Breach:1972](../../Breach/src/sim.worker.js#L1972)). That form points *uphill*
+in exactly the situation this game is built around. A cell tucked behind a long prop is
+reached cheaply around the prop's end; its neighbour on the prop side was reached
+*through* the `OBSTACLE_COST` skirt and carries a hugely inflated distance. The
+inflated term dominates the subtraction, so the vector points at the **higher** of the
+two neighbours — and the cell it points into points straight back. Enemies entering
+that two-cell trap oscillate forever. Breach never sees it because its walls exist to
+be ground through, so nothing lingers in that valley.
+
+Flooring each side at zero fixes it for free. On smooth ground it gives the same
+*direction* as the central difference (a linear ramp yields `-a` rather than `-2a`, and
+the vector is normalised anyway), so the diagonal continuity the formula exists for is
+fully preserved.
+
+It also upgrades "no cell has a zero gradient" from a hope to a **guarantee**. SPFA
+relaxes `dist[n] = dist[c] + cost[n]` with strictly positive cost, so every labelled
+cell has a predecessor of strictly lower distance — therefore every non-seed cell has
+at least one lower 4-neighbour, therefore at least one axis is non-zero. **The swarm
+provably cannot stall anywhere on the field.**
+
+One consequence worth knowing before you write a test against this: because the
+direction is constant across a cell, a traced path circles the seed *cell* and can
+never converge closer than one cell diagonal (~2.83 units) to the seed *point*. In the
+game that last stretch is covered by separation and body radius, not by the field.
 
 **The one adaptation from Breach.** Breach's goal is a static castle; ours is the
 **moving player**. So the two halves are split: cost is built once at world
@@ -404,6 +433,19 @@ so they run in plain node with no WebGL, no canvas, no mocks:
   reaches the sim, which is what a screenshot cannot tell you. It also runs the touch
   path in a phone-sized viewport with `?touch=1`.
 
+  The same seam exposes `__spawn(count, tier, radius)` — the interesting swarm
+  behaviour lives at a crowd size the spawn ramp takes minutes to reach, and a
+  verification run nobody will wait four minutes for is a verification run nobody
+  executes — and `__overlapsProp`, so the script asks the arena itself whether a point
+  is inside a prop instead of keeping a copy of the 14 boxes that would drift.
+
+  > **The trap this class of test falls into.** Two of these checks initially failed on
+  > state the *script* had created, not the game: teleporting the player across the
+  > arena leaves a swarm scattered relative to where they now are, which is not
+  > something the real game can produce. Anything asserting about the swarm has to
+  > clear the field and set the situation up deliberately first, or it is measuring the
+  > harness.
+
 Capture in both goes through **raw CDP `Page.captureScreenshot`** — `page.screenshot()`
 hangs on font-wait in this environment. In headed mode, clip the capture to the
 emulated viewport; Chromium's window is larger than the page and an unclipped shot is
@@ -427,6 +469,10 @@ At `MAX_ENEMIES = 400` the per-tick cost is roughly:
 | Swarm step | 400 × ~9 neighbours — the dominant term, still ~0.2 ms |
 | Combat | 400 aura tests + ~8 bolts × grid query |
 | Matrix writes | ~400 + orbs |
+
+**Measured** (M2, headed run on GPU hardware, 400 enemies): **0.10 ms**. `game.stepMs`
+carries the last tick's cost and `npm run verify` asserts it against the 2 ms budget, so
+this number stops being a claim and starts being a regression test.
 
 The whole tick is comfortably inside 2 ms on a modern laptop, which is the point:
 **there is no performance reason for a worker at this scale**, and adding one would

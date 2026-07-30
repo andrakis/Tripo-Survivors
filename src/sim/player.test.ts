@@ -91,9 +91,10 @@ describe('player bounds and obstacles', () => {
   it('resolves on the axis of least penetration, preserving motion along a wall', () => {
     const wall = OBSTACLES[3]; // East Wall: hx 2.0, hz 20.0 — long on Z
     // Pressed into its west face, well away from the ends.
-    const [x, z] = resolveObstacles(wall.x - wall.hx + 0.2, wall.z, 0.6);
-    expect(x).toBeCloseTo(wall.x - wall.hx - 0.6, 6);
-    expect(z).toBe(wall.z); // the tangential component is untouched — no sticking
+    const out = { x: 0, z: 0 };
+    resolveObstacles(out, wall.x - wall.hx + 0.2, wall.z, 0.6);
+    expect(out.x).toBeCloseTo(wall.x - wall.hx - 0.6, 6);
+    expect(out.z).toBe(wall.z); // the tangential component is untouched — no sticking
   });
 });
 

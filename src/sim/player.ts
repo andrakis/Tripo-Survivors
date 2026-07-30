@@ -5,7 +5,10 @@
 // not know how it will be drawn. It is plain numbers, and it runs in node under vitest.
 
 import { TUNING } from '../config';
-import { clampToWorld, resolveObstacles } from './world';
+import { clampToWorld, resolveObstacles, type Vec2 } from './world';
+
+/** Scratch for the two out-param world helpers. Module-level so the tick allocates nothing. */
+const scratch: Vec2 = { x: 0, z: 0 };
 
 export interface Player {
   x: number;
@@ -54,8 +57,10 @@ export function stepPlayer(p: Player, ix: number, iz: number, dt: number): void 
 
   // Obstacles first, bounds second. The other order lets a prop sitting near the world edge push
   // the player back outside the bounds that were just enforced.
-  [p.x, p.z] = resolveObstacles(p.x, p.z, TUNING.PLAYER_R);
-  [p.x, p.z] = clampToWorld(p.x, p.z, TUNING.PLAYER_R);
+  resolveObstacles(scratch, p.x, p.z, TUNING.PLAYER_R);
+  clampToWorld(scratch, scratch.x, scratch.z, TUNING.PLAYER_R);
+  p.x = scratch.x;
+  p.z = scratch.z;
 
   // Facing comes from INPUT, not from velocity, and is held when input goes to zero.
   //

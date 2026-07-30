@@ -7,7 +7,7 @@ a game; M5 makes it look like one; M6 is the payload the project was built to de
 See [DESIGN.md](DESIGN.md) for the systems these milestones serve and
 [ARCHITECTURE.md](ARCHITECTURE.md) for how they're built.
 
-**Status:** M0 and M1 done 2026-07-29. M2 (the swarm) is next.
+**Status:** M0–M2 done (M0/M1 2026-07-29, M2 2026-07-30). M3 (combat) is next.
 
 ---
 
@@ -113,32 +113,69 @@ checks at a locked 60 fps on GPU hardware, `lint`/`build`/`test` clean.
   Not fixed here — it is a look problem, and it belongs in **M5**'s readability pass
   (shorter props, or the player drawn on top through a depth-test-off pass).
 
-## Milestone 2 — The swarm ⬜ not started
+## Milestone 2 — The swarm ✅ done (2026-07-30)
 
 **Why this is the real milestone:** it is the technically hard part and the visual
 hook. Everything before it is scaffolding; everything after it is game design.
 
-- [ ] `sim/grid.ts` — counting-sort spatial grid, parametric over
+- [x] `sim/grid.ts` — counting-sort spatial grid, parametric over
       `(positions, stride, count, cell)`. Ported from
-      [Breach:708-757](../../Breach/src/sim.worker.js#L708-L757).
-- [ ] `sim/world.ts` — obstacle list; stamps the static flow cost field.
-- [ ] `sim/flow.ts` — cached cost field + SPFA distance solve + **central-difference**
-      gradient. Ported from [Breach:1840-1972](../../Breach/src/sim.worker.js#L1840-L1972),
-      re-seeded on the player at `FLOW_HZ` 10 and on player-cell change.
-- [ ] `sim/swarm.ts` — SoA (stride 8), flow + **dual** separation (steering bias *and*
+      [Breach:708-757](../../Breach/src/sim.worker.js#L708-L757). Plus
+      `queryNeighbors`, which the aura and the bolt broad-phase use in M3.
+- [x] `sim/world.ts` — obstacle list; stamps the static flow cost field; owns the
+      world↔cell mapping.
+- [x] `sim/flow.ts` — cached cost field + SPFA distance solve + gradient. Ported from
+      [Breach:1840-1972](../../Breach/src/sim.worker.js#L1840-L1972), re-seeded on the
+      player at `FLOW_HZ` 10 and on player-cell change. **The gradient is a one-sided
+      downhill difference, not Breach's plain central difference** — see below.
+- [x] `sim/swarm.ts` — SoA (stride 8), flow + **dual** separation (steering bias *and*
       clamped positional MTV) + obstacle MTV + integrate. Ported from
-      [Breach:3712-3760](../../Breach/src/sim.worker.js#L3712-L3760).
-- [ ] Swap-remove kill; `MAX_ENEMIES = 400`.
-- [ ] `sim/waves.ts` — ring-spawn outside the frustum, `SPAWN_BASE + t/SPAWN_RAMP`.
-- [ ] `scene/Swarm.tsx` — one `<instancedMesh>` per tier, `frustumCulled={false}`,
+      [Breach:3790-3900](../../Breach/src/sim.worker.js#L3790).
+- [x] Swap-remove kill; `MAX_ENEMIES = 400`.
+- [x] `sim/waves.ts` — ring-spawn outside the frustum, `SPAWN_BASE + t/SPAWN_RAMP`,
+      time-ramped tier weights, elites on their own timer.
+- [x] `config.ts` — the `TIERS` table from [DESIGN §7.1](DESIGN.md).
+- [x] `scene/Swarm.tsx` — one `<instancedMesh>` per tier, `frustumCulled={false}`,
       `count = 0` in `useLayoutEffect`, matrices written imperatively.
-- [ ] Tests: flow routes around a wall · grid query matches brute-force O(n²) ·
-      separation reaches and holds equilibrium · swap-remove keeps `[0, N)` intact.
+- [x] Tests: 17 new vitest cases — flow routes around a wall · grid query matches
+      brute-force O(n²) · separation reaches and holds equilibrium · swap-remove keeps
+      `[0, n)` intact · the spawn director's curve, gating, ring and cap.
+- [x] `npm run verify` extended to 26 browser checks, including the routing case.
 
 **Done when:** the crowd flows around a pillar and re-merges behind it, arrives as a
-spread front rather than a line or a blob, and the tests above pass. Verify with a
-headless screenshot — and treat a framerate collapse under software rendering as an
-instance-count bug until proven otherwise.
+spread front rather than a line or a blob, and the tests above pass. **All verified**
+— `shots/swarm-routing.png` is a 36-strong rank split into two streams around the
+Keep's corners, 36/36 of which then reached the player behind it. At the 400 cap the
+whole tick costs **0.10 ms** against ARCHITECTURE §11's 2 ms budget, at 60 fps.
+
+### What M2 learned
+
+- **Breach's central-difference gradient points UPHILL behind a long prop, and the
+  swarm oscillates in place.** This cost most of the milestone. A cell tucked behind
+  the East Wall is reached cheaply around the end; its neighbour on the wall side was
+  reached *through* the 40× skirt and carries a wildly inflated distance. That
+  inflated term dominates `dL - dR`, so the vector points at the **higher** of the two
+  neighbours, and the next cell points back — a two-cell trap. Breach never sees it
+  because its walls are meant to be ground through, so nothing lingers in that valley.
+  Fix: count only neighbours that are genuinely lower than the centre cell. Same
+  direction as the central difference on smooth ground, so the diagonal continuity
+  that the whole formula exists for is untouched. It also turns *"no cell has a zero
+  gradient"* into a **guarantee**: SPFA relaxes with strictly positive cost, so every
+  labelled cell has a predecessor of strictly lower distance, so every non-seed cell
+  has a lower 4-neighbour. The swarm provably cannot stall.
+- **A flow-traced path can never converge closer than one cell diagonal.** The
+  direction is constant across a 2-unit cell, so a tracer circles the seed cell rather
+  than reaching the seed point. Not a bug — in the game that last 3 units is covered
+  by separation and body radius — but it makes any test that asserts "arrived" need a
+  cell-sized tolerance, and the first version of that test looked like a pathing bug.
+- **`resolveObstacles`/`clampToWorld` had to become out-param writes.** Returning a
+  fresh `[x, z]` per call was invisible for one player; at 400 enemies × 2 calls ×
+  60 fps it is 48,000 tuples a second straight into the GC.
+- **"Verify against sim truth" only works if the harness doesn't create the state it
+  measures.** Two browser checks failed on situations the *script* had produced —
+  teleporting the player across the arena leaves a swarm scattered relative to where
+  they now are. Both had to be rewritten as controlled experiments (clear the field
+  first; place the rank deliberately) before they measured the game at all.
 
 ## Milestone 3 — Combat ⬜ not started
 

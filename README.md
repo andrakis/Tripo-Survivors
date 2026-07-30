@@ -10,8 +10,9 @@ next. Survive the ramp.
 It ships playable with primitive cubes and cones. Drop your own Tripo `.glb` into
 `public/models/`, name it in one file, and the cubes become monsters.
 
-> **Status: M1 (player + controls) done, 2026-07-29.** You can drive the character
-> around the arena; the swarm arrives in M2. See [ROADMAP.md](docs/ROADMAP.md).
+> **Status: M2 (the swarm) done, 2026-07-30.** Drive the character while four tiers of
+> enemies flow in around the props. Nothing can hurt anything yet — combat is M3.
+> 400 enemies cost 0.10 ms of tick at 60 fps. See [ROADMAP.md](docs/ROADMAP.md).
 
 ---
 
@@ -50,6 +51,13 @@ That core is ported down from [Breach](../Breach), a 20,000-unit siege RTS in th
 same family of repos — three focused algorithms lifted out of a 4,600-line worker and
 re-implemented clean, running entirely on the CPU at a 400-unit cap. See
 [ARCHITECTURE.md §4](docs/ARCHITECTURE.md).
+
+One of the three needed a real fix on the way down: Breach's central-difference flow
+gradient points *uphill* behind a long obstacle, because the cell on the obstacle's side
+was reached through a 40× cost skirt and its inflated distance swamps the subtraction.
+Enemies oscillate between two cells forever. Flooring each side at zero — counting only
+neighbours that are genuinely downhill — fixes it, and makes "the swarm can never stall"
+a property you can prove rather than one you hope for.
 
 ## Using your own models
 
