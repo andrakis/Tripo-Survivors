@@ -11,11 +11,15 @@ import { createPlayer } from './player';
 import {
   B_PIERCE,
   BOLT_STRIDE,
+  B_VX,
+  B_VZ,
   B_X,
   B_Z,
   createCombat,
   D_AGE,
   DEATH_STRIDE,
+  DR_VALUE,
+  DROP_STRIDE,
   stepCombat,
   takeContact,
   type Combat,
@@ -26,6 +30,8 @@ import {
   ENEMY_STRIDE,
   E_FLASH,
   E_HP,
+  E_VX,
+  E_VZ,
   E_X,
   E_Z,
   spawnEnemy,
@@ -39,13 +45,29 @@ function rng(seed: number) {
   return () => ((s = (s * 1664525 + 1013904223) >>> 0) / 4294967296);
 }
 
-/** A player, a swarm, a grid and a combat state, wired the way game.ts wires them. */
+/**
+ * A player, a swarm, a grid and a combat state, wired the way game.ts wires them — but with the
+ * Lance ON.
+ *
+ * `createCombat` ships it off from M4: DESIGN §6.3 unlocks it at level 3 and progression owns that
+ * (sim/progression.ts). Every test below is about what the weapons DO, not about when they are
+ * granted, so they enable it explicitly rather than each one silently depending on the default.
+ */
 function scene() {
   const p = createPlayer();
   const s = createSwarm();
   const g = makeGrid();
   const c = createCombat();
+  c.boltEnabled = true;
   return { p, s, g, c };
+}
+
+/** Total XP value queued by this tick's kills. Combat no longer awards XP — it queues drops that
+ *  become orbs in step 8, so this is what "the kill paid out" means from here (sim/orbs.ts). */
+function dropped(c: Combat): number {
+  let sum = 0;
+  for (let i = 0; i < c.nDrops; i++) sum += c.drops[i * DROP_STRIDE + DR_VALUE];
+  return sum;
 }
 
 /** One tick of steps 5 and 7 only — nothing here needs the swarm to move. */
@@ -108,7 +130,7 @@ describe('the aura', () => {
 describe('the bolt', () => {
   /** Silence the aura so a test about the Lance is only about the Lance. */
   function boltOnly() {
-    const sc = scene();
+    const sc = scene(); // already has boltEnabled — see above
     sc.c.auraTimer = 1e6;
     return sc;
   }
@@ -201,6 +223,99 @@ describe('the bolt', () => {
   });
 });
 
+describe('what the unlocks actually do', () => {
+  // sim/progression.test.ts checks that reaching a level writes the right live field. These check
+  // that the weapons then behave differently — the half that would still be broken if a field were
+  // set and never read.
+
+  it('scales every damage source with damageMul, not just the one that was edited last', () => {
+    // The level 4 unlock is "Damage +25% (all sources)". It is applied inside `hit`, so a weapon
+    // added later cannot opt out of it by forgetting to multiply.
+    const { p, s, g, c } = scene();
+    c.boltEnabled = false;
+    c.damageMul = 2;
+    const i = spawnEnemy(s, 1, 0, 3); // an elite: survives the pulse
+    tick(c, p, s, g);
+    expect(TIERS[3].hp - hpOf(s, i)).toBe(TUNING.AURA_DAMAGE * 2);
+  });
+
+  it('fires Twin Lance as two bolts fanned symmetrically about facing', () => {
+    // ±BOLT_SPREAD about where the player was already aiming, NOT one bolt moved and one added: the
+    // level 7 unlock has to widen the shot the player has spent six levels learning to aim.
+    const { p, s, g, c } = scene();
+    c.auraTimer = 1e6;
+    c.boltCount = 2;
+    p.facing = 0; // +Z
+
+    tick(c, p, s, g);
+
+    expect(c.nb).toBe(2);
+    const angle = (i: number) =>
+      Math.atan2(c.bolts[i * BOLT_STRIDE + B_VX], c.bolts[i * BOLT_STRIDE + B_VZ]);
+    expect(angle(0)).toBeCloseTo(-TUNING.BOLT_SPREAD, 6);
+    expect(angle(1)).toBeCloseTo(TUNING.BOLT_SPREAD, 6);
+  });
+
+  it('gives each bolt of the volley its own pierce budget', () => {
+    const { p, s, g, c } = scene();
+    c.auraTimer = 1e6;
+    c.boltCount = 2;
+    c.boltPierce = 3; // the level 5 unlock
+    tick(c, p, s, g);
+    for (let i = 0; i < c.nb; i++) expect(c.bolts[i * BOLT_STRIDE + B_PIERCE]).toBe(3);
+  });
+
+  it('damages with the Orbiter on a cadence, in a ring the aura does not cover', () => {
+    // A target parked on the orbit path and outside a level-1 aura. The orbit is what reaches it, so
+    // this fails if the sphere's damage query is placed anywhere other than where it is drawn.
+    const { p, s, g, c } = scene();
+    c.boltEnabled = false;
+    c.auraTimer = 1e6;
+    c.orbiters = 1;
+    c.orbiterPhase = 0;
+    const i = spawnEnemy(s, TUNING.ORBITER_R, 0, 3); // elite, so it survives to be counted
+    expect(TUNING.ORBITER_R).toBeGreaterThan(TUNING.UNIT_R + TUNING.PLAYER_R);
+
+    // One full revolution: the sphere passes the target once, and the cadence lands on it.
+    for (let t = 0; t < (Math.PI * 2) / TUNING.ORBITER_SPIN; t += DT) tick(c, p, s, g);
+    const dealt = TIERS[3].hp - hpOf(s, i);
+    expect(dealt).toBeGreaterThan(0);
+    // ...but it is a cadence, not per-tick contact. Per-tick would be 60 × 5 for every tick in
+    // range; the whole revolution must cost a small handful of hits.
+    expect(dealt).toBeLessThanOrEqual(TUNING.ORBITER_DAMAGE * 6);
+  });
+
+  it('does nothing at all before the Orbiter is unlocked', () => {
+    const { p, s, g, c } = scene();
+    c.boltEnabled = false;
+    c.auraTimer = 1e6;
+    const i = spawnEnemy(s, TUNING.ORBITER_R, 0, 3);
+    for (let t = 0; t < 3; t += DT) tick(c, p, s, g);
+    expect(hpOf(s, i)).toBe(TIERS[3].hp);
+  });
+
+  it('throws the crowd outward on a pulse once Concussion is unlocked', () => {
+    const { p, s, g, c } = scene();
+    c.boltEnabled = false;
+    c.knockback = TUNING.KNOCKBACK;
+    const i = spawnEnemy(s, 2, 0, 3); // elite: 400 hp, so it is knocked back rather than killed
+
+    tick(c, p, s, g); // the pulse fires on the first tick
+
+    // Outward along the line from the player, and only outward.
+    expect(s.data[i * ENEMY_STRIDE + E_VX]).toBeCloseTo(TUNING.KNOCKBACK, 6);
+    expect(s.data[i * ENEMY_STRIDE + E_VZ]).toBeCloseTo(0, 6);
+  });
+
+  it('leaves the crowd alone on a pulse before Concussion', () => {
+    const { p, s, g, c } = scene();
+    c.boltEnabled = false;
+    const i = spawnEnemy(s, 2, 0, 3);
+    tick(c, p, s, g);
+    expect(s.data[i * ENEMY_STRIDE + E_VX]).toBe(0);
+  });
+});
+
 describe('death', () => {
   it('counts one kill and one XP award per enemy, whatever killed it', () => {
     const { p, s, g, c } = scene();
@@ -212,11 +327,15 @@ describe('death', () => {
     }
     const started = s.n;
 
-    for (let t = 0; t < 8; t += DT) tick(c, p, s, g);
+    let payout = 0;
+    for (let t = 0; t < 8; t += DT) {
+      tick(c, p, s, g);
+      payout += dropped(c);
+    }
 
     expect(c.kills).toBe(started - s.n);
     expect(c.kills).toBeGreaterThan(20); // and it actually killed things
-    expect(c.xp).toBeGreaterThanOrEqual(c.kills); // every tier is worth at least 1
+    expect(payout).toBeGreaterThanOrEqual(c.kills); // every tier is worth at least 1 XP
   });
 
   it('leaves no dead enemy in the live range, and no live enemy lost', () => {

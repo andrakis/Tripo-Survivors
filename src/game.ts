@@ -15,7 +15,18 @@ import { createFlow, maybeSolveFlow, type FlowField } from './sim/flow';
 import { makeGrid, type Grid } from './sim/grid';
 import { buildSwarmGrid, createSwarm, spawnEnemy, stepSwarm, type Swarm } from './sim/swarm';
 import { createWaves, stepWaves, type Waves } from './sim/waves';
-import { createCombat, stepCombat, takeContact, type Combat } from './sim/combat';
+import {
+  createCombat,
+  DR_VALUE,
+  DR_X,
+  DR_Z,
+  DROP_STRIDE,
+  stepCombat,
+  takeContact,
+  type Combat,
+} from './sim/combat';
+import { createOrbs, spawnOrb, stepOrbs, type Orbs } from './sim/orbs';
+import { createProgression, stepProgression, type Progression } from './sim/progression';
 import { overlapsObstacle } from './sim/world';
 import { sampleInput, type InputVector } from './input';
 import { useUi } from './store';
@@ -39,8 +50,10 @@ export interface Game {
   swarm: Swarm;
   waves: Waves;
   combat: Combat;
-  /** Player level. Pinned at 1 until M4's progression.ts drives it off `combat.xp`. */
-  level: number;
+  /** Uncollected XP on the ground. */
+  orbs: Orbs;
+  /** Level, XP curve, and the unlock table's cursor through it. */
+  prog: Progression;
   /** Run time of the last hit taken, or -1. Drives the HUD vignette (DESIGN §12 rule 4). */
   lastHitAt: number;
   /** Bumped by resetGame so run-scoped UI remounts instead of carrying the last run's state. */
@@ -60,7 +73,8 @@ export function createGame(): Game {
     swarm: createSwarm(),
     waves: createWaves(),
     combat: createCombat(),
-    level: 1,
+    orbs: createOrbs(),
+    prog: createProgression(),
     lastHitAt: -1,
     runId: 0,
     storeSince: 0,
@@ -89,8 +103,11 @@ export function resetGame(g: Game): void {
   g.input.z = 0;
   g.swarm = createSwarm();
   g.waves = createWaves();
+  // Replacing these three is also what undoes twelve levels of unlock modifiers — every one of them
+  // is a write to a live field on `combat`, `player` or `orbs`, and nothing has to be unwound.
   g.combat = createCombat();
-  g.level = 1;
+  g.orbs = createOrbs();
+  g.prog = createProgression();
   g.lastHitAt = -1;
   g.runId = runId;
   g.storeSince = 0;
@@ -106,8 +123,12 @@ function syncStore(g: Game): void {
     maxHp: g.player.maxHp,
     time: g.time,
     kills: g.combat.kills,
-    xp: g.combat.xp,
-    level: g.level,
+    xp: g.prog.xp,
+    xpNeed: g.prog.need,
+    totalXp: g.prog.totalXp,
+    level: g.prog.level,
+    lastLevelAt: g.prog.lastLevelAt,
+    unlock: g.prog.lastUnlock,
     dead: !isAlive(g.player),
     lastHitAt: g.lastHitAt,
     runId: g.runId,
@@ -142,14 +163,23 @@ export function stepGame(g: Game, rawDt: number): void {
   stepSwarm(g.swarm, g.grid, g.flow, dt); //    6. flow + separation + obstacles + integrate
   stepCombat(g.combat, p, g.swarm, g.grid, dt); // 7. aura pulse; bolts; damage; reap the dead
 
-  //  8. orbs.spawn()   9. orbs.step()   10. progression.step()                          -- M4
+  // 8. this tick's kills become orbs on the ground. Queued by combat's reap rather than dropped from
+  //    inside it, so combat never learns that orbs exist (ARCHITECTURE §6).
+  for (let i = 0; i < g.combat.nDrops; i++) {
+    const b = i * DROP_STRIDE;
+    spawnOrb(g.orbs, g.combat.drops[b + DR_X], g.combat.drops[b + DR_Z], g.combat.drops[b + DR_VALUE]);
+  }
+
+  const gained = stepOrbs(g.orbs, p, dt); //     9. magnet + pickup -> banked XP
+  const levelled = stepProgression(g.prog, g, gained, g.time, dt); // 10. level-ups, apply unlocks
 
   if (takeContact(g.combat, p, g.swarm, g.grid)) g.lastHitAt = g.time; // 11. contact, i-frame gated
 
-  // 12. syncStore, throttled. The death transition is pushed immediately rather than waiting up to
-  //     100 ms for the next slot — it is the one state change the player is watching for.
+  // 12. syncStore, throttled. Death and a level-up are both pushed immediately rather than waiting
+  //     up to 100 ms for the next slot — they are the two state changes the player is watching for,
+  //     and a toast that keys on `lastLevelAt` should not arrive after the shake it belongs to.
   g.storeSince += dt;
-  if (g.storeSince >= 1 / TUNING.STORE_HZ || !isAlive(p)) {
+  if (g.storeSince >= 1 / TUNING.STORE_HZ || levelled || !isAlive(p)) {
     g.storeSince = 0;
     syncStore(g);
   }
@@ -173,8 +203,16 @@ if (import.meta.env.DEV) {
     __reset: () => void;
     __spawn: (count: number, tier?: number, radius?: number) => number;
     __overlapsProp: (x: number, z: number, r: number) => boolean;
+    __grantXp: (amount: number) => number;
   };
   w.__game = game;
+  // Levels 2..12 are minutes of real play apart by design, and a verification run that has to earn
+  // them is a verification run nobody executes. This is the SAME call orb pickup makes — it grants
+  // XP and lets the ordinary unlock table decide what that means — not a "set level" backdoor.
+  w.__grantXp = (amount) => {
+    stepProgression(game.prog, game, amount, game.time, 0);
+    return game.prog.level;
+  };
   // Exposed so the verification script can ask the arena itself whether a point is inside a prop,
   // rather than keeping its own copy of the 14 boxes that would silently drift out of date.
   w.__overlapsProp = overlapsObstacle;

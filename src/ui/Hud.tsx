@@ -14,7 +14,8 @@ function clock(t: number): string {
 
 const PANEL: React.CSSProperties = {
   position: 'fixed',
-  top: 10,
+  // Clear of the XP strip pinned across the very top.
+  top: 20,
   left: 12,
   zIndex: 10,
   pointerEvents: 'none',
@@ -27,10 +28,14 @@ export function Hud() {
   const time = useUi((s) => s.time);
   const kills = useUi((s) => s.kills);
   const lastHitAt = useUi((s) => s.lastHitAt);
+  const level = useUi((s) => s.level);
+  const xp = useUi((s) => s.xp);
+  const xpNeed = useUi((s) => s.xpNeed);
 
   const frac = maxHp > 0 ? Math.max(0, hp / maxHp) : 0;
   // Below a quarter the bar goes from "a number" to "the thing you are looking at".
   const low = frac <= 0.25;
+  const xpFrac = xpNeed > 0 ? Math.min(1, xp / xpNeed) : 0;
 
   return (
     <>
@@ -57,6 +62,34 @@ export function Hud() {
           }}
         />
       )}
+
+      {/* XP: a full-width strip across the very top edge, deliberately unlike the HP bar. They are
+          read at completely different moments — HP is checked under pressure, XP is glanced at
+          between waves — and giving them the same shape in the same corner would make the wrong one
+          the thing the eye lands on. Progress toward the NEXT level, so it always fills and resets;
+          the running total is on the game-over card, where a total is worth something. */}
+      <div
+        style={{
+          position: 'fixed',
+          top: 0,
+          left: 0,
+          right: 0,
+          height: 5,
+          zIndex: 10,
+          pointerEvents: 'none',
+          background: '#0f131acc',
+        }}
+      >
+        <div
+          style={{
+            width: `${xpFrac * 100}%`,
+            height: '100%',
+            background: '#8fe3ff',
+            boxShadow: '0 0 8px #8fe3ffaa',
+            transition: 'width 100ms linear',
+          }}
+        />
+      </div>
 
       <div style={PANEL}>
         <div
@@ -90,6 +123,8 @@ export function Hud() {
           {clock(time)}
           <span style={{ color: '#8fa0b8' }}>{'  ·  '}</span>
           {kills} killed
+          <span style={{ color: '#8fa0b8' }}>{'  ·  '}</span>
+          <span style={{ color: '#8fe3ff' }}>lv {level}</span>
         </div>
       </div>
     </>

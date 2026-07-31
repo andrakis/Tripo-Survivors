@@ -9,11 +9,17 @@ import { useLayoutEffect, useMemo, useRef, type RefObject } from 'react';
 import { useFrame, useThree } from '@react-three/fiber';
 import * as THREE from 'three';
 import { TUNING } from '../config';
+import { game } from '../game';
 
 export function CameraRig({ focus }: { focus: RefObject<THREE.Vector3> }) {
   const camera = useThree((s) => s.camera);
   const offset = useMemo(() => new THREE.Vector3(...TUNING.CAM_OFFSET), []);
   const desired = useRef(new THREE.Vector3());
+  // The smoothed follow position, kept SEPARATELY from camera.position because the level-up shake is
+  // added on top of it. Shaking camera.position directly would feed the displacement back into next
+  // frame's lerp, and the camera would drift off the player by however far it was last kicked.
+  const base = useRef(new THREE.Vector3(...TUNING.CAM_OFFSET));
+  const elapsed = useRef(0);
 
   // The rotation is computed ONCE and then left alone. Calling lookAt(focus) every frame would
   // wobble the pitch as the smoothed position lags behind the target — a subtle, permanent sway
@@ -29,7 +35,25 @@ export function CameraRig({ focus }: { focus: RefObject<THREE.Vector3> }) {
     // 1 - exp(-k*dt), NOT a raw lerp(a, b, 0.1): the raw form makes stiffness a function of
     // framerate — subtly wrong at 144 Hz and badly wrong at 20 fps.
     const k = 1 - Math.exp(-TUNING.CAM_STIFFNESS * Math.min(dt, 0.05));
-    camera.position.lerp(desired.current, k);
+    base.current.lerp(desired.current, k);
+
+    // Level-up shake. Two incommensurable frequencies rather than a random offset per frame: random
+    // jitter at 60 Hz is aliasing, not motion, and it reads as the camera being broken instead of as
+    // something having landed. The amplitude is a decaying value the sim owns, so the shake is over
+    // in SHAKE_TIME however many frames that takes.
+    elapsed.current += dt;
+    const s = game.prog.shake;
+    if (s > 0) {
+      const t = elapsed.current * TUNING.SHAKE_FREQ;
+      const amp = s * s * TUNING.SHAKE_AMP; // squared: the tail falls away rather than stopping dead
+      camera.position.set(
+        base.current.x + Math.sin(t) * amp,
+        base.current.y + Math.sin(t * 1.7) * amp * 0.6,
+        base.current.z,
+      );
+    } else {
+      camera.position.copy(base.current);
+    }
   });
 
   return null;

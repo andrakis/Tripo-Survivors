@@ -245,9 +245,14 @@ xpToNext(level) = ceil(5 * level ^ 1.45)
 | 2 | 14 | 19 |
 | 3 | 25 | 44 |
 | 4 | 38 | 82 |
-| 5 | 53 | 135 |
-| 8 | 106 | 424 |
-| 12 | 191 | 1,180 |
+| 5 | 52 | 134 |
+| 8 | 102 | 389 |
+| 12 | 184 | 997 |
+
+The **Cumulative** column is the total XP spent by the time that row's level-up is
+paid for — so reaching level 8 costs the level 7 row, 287. (These were a few points
+high in the first draft; the formula is the specification and the table is now the
+formula's output, checked in `sim/progression.test.ts`.)
 
 Tuned against the spawn curve so a competent run hits **level 8 around 2:30** and
 **level 12 around 5:00** — i.e. the full unlock table is seen in a normal run, which

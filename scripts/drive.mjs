@@ -1,4 +1,4 @@
-// M1–M3 verification: drive the game in a real browser and assert against SIM TRUTH.
+// M1–M4 verification: drive the game in a real browser and assert against SIM TRUTH.
 //
 //   node scripts/drive.mjs [url] [--headless]
 //
@@ -390,7 +390,8 @@ const combat = () =>
     const g = window.__game;
     return {
       kills: g.combat.kills,
-      xp: g.combat.xp,
+      // XP is banked by orb pickup from M4, not awarded by the kill — see sim/orbs.ts.
+      xp: g.prog.totalXp,
       nb: g.combat.nb,
       nd: g.combat.nd,
       auraR: g.combat.auraR,
@@ -610,7 +611,265 @@ check(
 );
 check('the HUD clock matches the run clock', hud.text.includes(`${mm}:${ss}`), `${mm}:${ss}`);
 
-// --- 12. the run ends, and starts again -------------------------------------------------------------
+// --- 12. XP, orbs and progression (M4) ---------------------------------------------------------------
+// A clean run first: everything below is about what a level DOES, and the checks in section 9 have
+// already earned several.
+await page.evaluate(() => window.__reset());
+await page.waitForTimeout(300);
+await teleport(-100, 80);
+await page.evaluate(() => {
+  window.__game.swarm.n = 0;
+  window.__game.orbs.n = 0;
+});
+await page.waitForTimeout(200);
+
+const prog = () =>
+  page.evaluate(() => {
+    const g = window.__game;
+    return {
+      level: g.prog.level,
+      xp: g.prog.xp,
+      need: g.prog.need,
+      total: g.prog.totalXp,
+      lastLevelAt: g.prog.lastLevelAt,
+      shake: g.prog.shake,
+      orbs: g.orbs.n,
+      magnetR: g.orbs.magnetR,
+      bolt: g.combat.boltEnabled,
+      boltCount: g.combat.boltCount,
+      pierce: g.combat.boltPierce,
+      auraR: g.combat.auraR,
+      orbiters: g.combat.orbiters,
+      knockback: g.combat.knockback,
+      damageMul: g.combat.damageMul,
+      speedMul: g.player.speedMul,
+      hp: g.player.hp,
+      maxHp: g.player.maxHp,
+      stepMs: g.stepMs,
+      text: document.body.innerText,
+    };
+  });
+
+/** Every orb on the ground, with its distance from the player. */
+const orbField = () =>
+  page.evaluate(() => {
+    const g = window.__game;
+    const out = [];
+    for (let i = 0; i < g.orbs.n; i++) {
+      const b = i * 4;
+      out.push({
+        x: g.orbs.data[b],
+        z: g.orbs.data[b + 1],
+        value: g.orbs.data[b + 2],
+        d: Math.hypot(g.orbs.data[b] - g.player.x, g.orbs.data[b + 1] - g.player.z),
+      });
+    }
+    return out;
+  });
+
+const fresh = await prog();
+check(
+  'a fresh run starts at level 1 with the Lance locked',
+  fresh.level === 1 && fresh.bolt === false && fresh.total === 0 && fresh.orbs === 0,
+  `lv ${fresh.level}, lance ${fresh.bolt}, ${fresh.total} xp`,
+);
+
+// A kill 12 units away, out of reach of the magnet. The aura is widened for exactly one pulse to
+// land it — the same trick `onePulse` uses — because what is on trial is where the ORB ends up, not
+// which weapon killed the body.
+await page.evaluate(() => {
+  const g = window.__game;
+  const s = g.swarm;
+  s.n = 0;
+  const b = 0;
+  s.data[b] = g.player.x + 12;
+  s.data[b + 1] = g.player.z;
+  s.data[b + 2] = 0;
+  s.data[b + 3] = 0;
+  s.data[b + 4] = 1; // one hit point: the pulse kills it outright
+  s.data[b + 5] = 0;
+  s.data[b + 6] = 0;
+  s.data[b + 7] = 0;
+  s.n = 1;
+  g.combat.auraR = 20;
+  g.combat.auraTimer = 0.001;
+});
+await page.waitForTimeout(150);
+await page.evaluate(() => {
+  window.__game.combat.auraR = 3.0; // back to the level-1 radius before anything else is measured
+});
+const dropped = await orbField();
+check(
+  'a kill drops an XP orb where the body fell',
+  dropped.length === 1 && Math.abs(dropped[0].d - 12) < 1.5,
+  `${dropped.length} orb at ${dropped[0]?.d.toFixed(1)} u`,
+);
+
+// It stays there. Orbs never expire (DESIGN §8) — the field behind you is the comeback mechanic.
+await page.waitForTimeout(2500);
+const stillThere = await orbField();
+const noPay = await prog();
+check(
+  'the orb waits on the ground and pays nothing until it is collected',
+  stillThere.length === 1 &&
+    Math.abs(stillThere[0].x - dropped[0].x) < 1e-3 &&
+    noPay.total === 0 &&
+    noPay.level === 1,
+  `${stillThere.length} orb, ${noPay.total} xp banked`,
+);
+
+// Walk onto it: the magnet takes it from there.
+await page.evaluate(() => {
+  const g = window.__game;
+  g.player.x = g.orbs.data[0] - 2.4; // just inside PICKUP_R, so the magnet does the last stretch
+  g.player.z = g.orbs.data[1];
+});
+await page.waitForTimeout(700);
+const collected = await prog();
+check(
+  'walking into the magnet radius banks the orb',
+  collected.orbs === 0 && collected.total === 1,
+  `${collected.orbs} left, ${collected.total} xp`,
+);
+
+// A crowd killed inside the aura pays out enough to level, and the orbs are cleaned up as it goes.
+await teleport(-100, 80);
+await page.waitForTimeout(200);
+await ring(30, 0, 2.2);
+await page.waitForTimeout(3000);
+const levelled = await prog();
+check(
+  'grinding a crowd levels the character up',
+  levelled.level >= 3 && levelled.total >= 30,
+  `lv ${levelled.level}, ${levelled.total} xp, ${levelled.orbs} orbs left`,
+);
+check(
+  'level 2 grew the aura and level 3 unlocked the Lance',
+  levelled.auraR >= 4.0 && levelled.bolt === true,
+  `auraR ${levelled.auraR}, lance ${levelled.bolt}`,
+);
+
+// The level-up itself: forced through the ordinary XP path (`__grantXp` is the call orb pickup
+// makes) so the toast and the shake can be read without racing a fight.
+await page.evaluate(() => {
+  const g = window.__game;
+  g.swarm.n = 0;
+  g.orbs.n = 0;
+  window.__grantXp(g.prog.need);
+});
+await page.waitForTimeout(120);
+const toasted = await prog();
+check(
+  'a level-up raises the toast, names the unlock, and shakes the camera',
+  toasted.text.includes(`LEVEL ${toasted.level}`) && toasted.shake > 0,
+  `"${toasted.text.replace(/\s+/g, ' ').match(/LEVEL \d+ [^\n]{0,24}/)?.[0] ?? '(no toast)'}", shake ${toasted.shake.toFixed(2)}`,
+);
+await capture('level-up');
+
+// The whole unlock table, in one jump: DESIGN §6.3 rows 4 through 12.
+await page.evaluate(() => {
+  const g = window.__game;
+  let guard = 0;
+  while (g.prog.level < 12 && guard++ < 40) window.__grantXp(g.prog.need);
+});
+await page.waitForTimeout(150);
+const maxed = await prog();
+check(
+  'the full unlock table lands on the live fields the weapons read',
+  maxed.level === 12 &&
+    maxed.boltCount === 2 &&
+    maxed.pierce === 3 &&
+    maxed.orbiters === 1 &&
+    maxed.knockback > 0 &&
+    maxed.damageMul > 1.2 &&
+    maxed.speedMul > 1.05 &&
+    maxed.magnetR > 4,
+  `lv12: ${maxed.boltCount} bolts, pierce ${maxed.pierce}, ${maxed.orbiters} orbiter, ` +
+    `dmg ×${maxed.damageMul.toFixed(2)}, speed ×${maxed.speedMul.toFixed(2)}, magnet ${maxed.magnetR.toFixed(1)} u`,
+);
+check(
+  'level 12 raises max HP and heals to full',
+  maxed.maxHp === 125 && maxed.hp === maxed.maxHp,
+  `${maxed.hp}/${maxed.maxHp} hp`,
+);
+
+// Twin Lance in flight: two bolts, fanned symmetrically about facing rather than one moved.
+await teleport(-100, 80);
+await page.evaluate(() => {
+  const g = window.__game;
+  g.swarm.n = 0;
+  g.combat.nb = 0;
+  g.player.facing = 0; // +Z
+  g.combat.boltTimer = 0.001;
+});
+await page.waitForTimeout(120);
+const volley = await page.evaluate(() => {
+  const c = window.__game.combat;
+  const out = [];
+  for (let i = 0; i < c.nb; i++) {
+    out.push(Math.atan2(c.bolts[i * 6 + 2], c.bolts[i * 6 + 3]));
+  }
+  return out;
+});
+check(
+  'Twin Lance fires two bolts, one either side of facing',
+  volley.length === 2 && Math.abs(volley[0] + volley[1]) < 1e-3 && Math.abs(volley[0]) > 0.15,
+  volley.map((a) => `${((a * 180) / Math.PI).toFixed(1)}°`).join(' / '),
+);
+
+// A big field of orbs is free: they are one flat array walk against one point, no grid.
+await teleport(-90, -90);
+await page.evaluate(() => {
+  const g = window.__game;
+  const o = g.orbs;
+  o.n = 0;
+  for (let i = 0; i < 2000; i++) {
+    const b = i * 4;
+    o.data[b] = 40 + (i % 50) * 0.7; // far from the player, so none of them are collected
+    o.data[b + 1] = 40 + ((i / 50) | 0) * 0.7;
+    o.data[b + 2] = 1;
+    o.data[b + 3] = 0;
+  }
+  o.n = 2000;
+  window.__spawn(400, 0, 26);
+});
+await page.waitForTimeout(1500);
+const loadedOrbs = await prog();
+check(
+  'the tick stays inside its 2 ms budget with 2000 orbs and 400 enemies',
+  loadedOrbs.stepMs < 2 && loadedOrbs.orbs >= 2000,
+  `${loadedOrbs.stepMs.toFixed(2)} ms, ${loadedOrbs.orbs} orbs`,
+);
+const orbFps = await page.evaluate(() => {
+  const m = document.body.innerText.match(/(\d+)\s*fps/);
+  return m ? Number(m[1]) : null;
+});
+check('holds 60 fps with a full orb field', orbFps !== null && orbFps >= 55, `${orbFps} fps`);
+
+// Twelve levels of unlock modifiers, undone by replacing three objects. This is the check that
+// `resetGame` does not have to remember each modifier one by one — the failure it guards is a second
+// run of a session silently starting with the first run's stats.
+await page.evaluate(() => window.__reset());
+await page.waitForTimeout(300);
+const unlevelled = await prog();
+check(
+  'a restart un-levels the character completely',
+  unlevelled.level === 1 &&
+    unlevelled.maxHp === 100 &&
+    unlevelled.bolt === false &&
+    unlevelled.orbiters === 0 &&
+    unlevelled.knockback === 0 &&
+    unlevelled.damageMul === 1 &&
+    unlevelled.speedMul === 1 &&
+    unlevelled.magnetR === 3 &&
+    unlevelled.orbs === 0,
+  `lv ${unlevelled.level}, ${unlevelled.maxHp} max hp, lance ${unlevelled.bolt}, ${unlevelled.orbs} orbs`,
+);
+
+// --- 13. the run ends, and starts again -------------------------------------------------------------
+// Deliberately on the level-1 run the reset above just produced. The M3 death path is about the
+// balance of contact damage against i-frames, and a level-12 loadout — Concussion holding the crowd
+// off, 25% more damage, an Orbiter — measures the unlock table instead.
 // The M3 "done when": a full run is playable start to death. Rather than wait out a real one, put the
 // player on low health in a crowd — the death PATH is what is under test, not the balance curve.
 await mortal();
@@ -663,12 +922,19 @@ const restarted = await page.evaluate(() => {
     x: g.player.x,
     z: g.player.z,
     card: document.body.innerText.includes('YOU DIED'),
+    level: g.prog.level,
+    orbs: g.orbs.n,
   };
 });
 check('RUN AGAIN starts a clean run', !restarted.card && restarted.hp === 100 && restarted.kills === 0, `${restarted.hp} hp, ${restarted.kills} kills, t ${restarted.time.toFixed(1)}`);
 check('the restart puts the player back at the origin on an empty field', Math.hypot(restarted.x, restarted.z) < 1 && restarted.n < 12, `(${restarted.x.toFixed(1)}, ${restarted.z.toFixed(1)}), ${restarted.n} enemies`);
+check(
+  'RUN AGAIN clears the level and the orbs left on the ground',
+  restarted.level === 1 && restarted.orbs === 0,
+  `lv ${restarted.level}, ${restarted.orbs} orbs`,
+);
 
-// --- 13. the budget, with combat running ------------------------------------------------------------
+// --- 14. the budget, with combat running ------------------------------------------------------------
 await teleport(-90, 90);
 await page.evaluate(() => window.__spawn(400, 2, 22)); // brutes: 60 hp, so the field stays full
 await page.waitForTimeout(2000);
@@ -744,6 +1010,14 @@ await page.evaluate(() => {
   put(26, 0, 5.5, 5, -1.1, 1.1);
   put(7, 1, 8, 4, -0.8, 0.8);
   put(3, 2, 9, 2, -0.4, 0.4);
+});
+// The Lance is a level 3 unlock and this is a fresh run, so grant the levels the shot is meant to
+// depict rather than waiting out the XP for them. The Orbiter at level 9 belongs in frame too: it is
+// the one unlock with a body in the world.
+await page.evaluate(() => {
+  const g = window.__game;
+  let guard = 0;
+  while (g.prog.level < 9 && guard++ < 40) window.__grantXp(g.prog.need);
 });
 await page.waitForTimeout(1600); // the front reaches the ring and the aura starts killing into it
 await capture('combat');

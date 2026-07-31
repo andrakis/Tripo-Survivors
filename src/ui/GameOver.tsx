@@ -27,7 +27,9 @@ export function GameOver() {
   const time = useUi((s) => s.time);
   const kills = useUi((s) => s.kills);
   const level = useUi((s) => s.level);
-  const xp = useUi((s) => s.xp);
+  // The RUN total, not the bar's progress toward the next level — on a card the interesting number
+  // is everything you banked, and orbs left on the ground are not in it.
+  const xp = useUi((s) => s.totalXp);
 
   // Restart on Enter/Space as well as the button. The player's hands are on WASD, and making them
   // find a mouse to do the one thing this screen offers is a bad end to every run.

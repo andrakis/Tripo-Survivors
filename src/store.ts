@@ -15,9 +15,19 @@ export interface UiState {
   /** Run clock in seconds. */
   time: number;
   kills: number;
+  /** XP banked toward the next level, and what that level costs. Together they are the HUD bar. */
   xp: number;
-  /** Fixed at 1 until M4's progression.ts drives it. The game-over card already reads it. */
+  xpNeed: number;
+  /** Every XP point banked this run — the game-over card's score line, not the bar. */
+  totalXp: number;
   level: number;
+  /**
+   * Run time of the last level-up, or -1, and the unlock it granted. Same pattern as `lastHitAt`:
+   * the toast is keyed on the VALUE, so two level-ups in quick succession play two animations
+   * instead of the second one landing invisibly inside the first one's fade.
+   */
+  lastLevelAt: number;
+  unlock: string;
   dead: boolean;
   /**
    * Run time at which the player last took a hit. The HUD keys its vignette off this VALUE rather
@@ -39,7 +49,11 @@ const EMPTY: UiState = {
   time: 0,
   kills: 0,
   xp: 0,
+  xpNeed: 5,
+  totalXp: 0,
   level: 1,
+  lastLevelAt: -1,
+  unlock: '',
   dead: false,
   lastHitAt: -1,
   runId: 0,

@@ -3,6 +3,7 @@ import { Scene } from './scene/Scene';
 import { FpsMeter } from './scene/FpsMeter';
 import { TouchControls } from './ui/TouchControls';
 import { Hud } from './ui/Hud';
+import { LevelUp } from './ui/LevelUp';
 import { GameOver } from './ui/GameOver';
 import { TUNING } from './config';
 
@@ -22,6 +23,7 @@ export function App() {
           human clock and never on the sim's (ARCHITECTURE §3). TouchControls renders itself away on
           a fine pointer (ARCHITECTURE §8). */}
       <Hud />
+      <LevelUp />
       <TouchControls />
       <GameOver />
     </>

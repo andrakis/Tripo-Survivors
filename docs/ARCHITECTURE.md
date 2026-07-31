@@ -51,7 +51,8 @@ src/
   models/registry.ts   THE TUTORIAL SEAM — see MODEL-PIPELINE.md
   store.ts             zustand: human-rate UI state ONLY
   scene/               R3F components. Read state, write matrices. No game logic.
-    Scene · Ground · Obstacles · Swarm · Player · Projectiles · Orbs · AuraRing · CameraRig · FpsMeter
+    Scene · Ground · Obstacles · Swarm · Player · Projectiles · Orbs · Orbiter · AuraRing ·
+    CameraRig · FpsMeter
     GameLoop             the ONE useFrame that runs game.step(), at priority -1 (§6)
   ui/                  Hud · LevelUp · TouchControls · GameOver
 ```
@@ -335,6 +336,16 @@ Buffers are allocated once at their cap (`MAX_ENEMIES` 400, `MAX_BOLTS` 128,
 | `bolts` | 6 | `x, z, vx, vz, life, pierceLeft` |
 | `orbs` | 4 | `x, z, value, age` |
 | `deaths` | 4 | `x, z, tier, age` |
+| `drops` | 3 | `x, z, value` |
+
+`orbs` carries no velocity on purpose. The magnet's acceleration is **positional** —
+speed interpolated from the orb's own distance to the player — so the pull can never
+overshoot, orbit or oscillate the way an integrated spring does once level 10 grows
+the magnet radius by 50%, and the stride stays at the four fields above.
+
+`drops` is a one-tick queue, not a population: the reap writes `{x, z, value}` for each
+body, step 8 turns them into orbs, and `combat.step` clears it at the top of the next
+tick. It exists so combat never learns that orbs exist.
 
 `seed` is a per-enemy random constant used for visual variation (bob phase, slight
 scale jitter) so a crowd of identical models doesn't move in lockstep. `flash` is a
@@ -381,8 +392,8 @@ canvas blank.
  4. waves.step(dt)          spawn budget -> ring spawns
  5. grid.build(enemies)     one rebuild, reused by every consumer below
  6. swarm.step(dt)          flow + separation + obstacles + integrate
- 7. combat.step(dt)         aura pulse; bolt spawn; bolt advance + hit resolution
- 8. deaths -> orbs.spawn()  kills drop orbs at the death position
+ 7. combat.step(dt)         aura pulse; bolts; orbiter; hit resolution; the reap
+ 8. drops -> orbs.spawn()   kills drop orbs at the death position
  9. orbs.step(dt)           magnet, pickup -> xp
 10. progression.step()      level-ups, apply unlocks
 11. player.takeContact()    contact damage from the enemy grid, i-frame gate
@@ -400,6 +411,13 @@ the exact frame that killed you. A crowd still grinding over the body behind the
 would be claiming the run is continuing. `resetGame` mutates the singleton **in place**
 — every scene component holds a reference to it and reads it imperatively, so handing
 back a fresh object would leave the renderer pointed at the previous run.
+
+**Unlocks are the reason `resetGame` replaces sub-objects wholesale.** Every row of the
+DESIGN §6.3 table writes a live field on `combat`, `player` or `orbs` — never on
+`TUNING` — so a fresh `createCombat()` / `createPlayer()` / `createOrbs()` un-levels the
+character with nothing to unwind. A reset that had to remember twelve modifiers is a
+reset that will one day forget one, and the symptom would be the *second* run of a
+session silently starting with the first run's stats.
 
 **Fixed vs variable timestep:** variable, with the 50 ms clamp. The sim has no
 stiff constraint solver and nothing here needs determinism across machines (no
@@ -459,7 +477,17 @@ Per-population notes:
   Deliberately *not* in `models/registry.ts`: the registry is the list of things a
   viewer would model, and a 30-centimetre streak that lives under a second is a visual
   effect wearing a mesh.
-- **Orbs** — one instanced mesh, emissive material, scale pulsed by `age`.
+- **Orbs** — one instanced mesh, unlit at full colour (an orb in a prop's shadow must
+  be as findable as one in the open), scale popped by `age` over `ORB_POP`. The bob
+  phase is offset by **position**, not by `age` or slot index: every orb from one aura
+  pulse shares an age, and a pickup swap-removes, so the slot an orb occupies changes
+  under it. Drawn before the cast, so a hundred of them never hide the enemies standing
+  on top of them ([DESIGN §12](DESIGN.md) rule 3).
+- **Orbiter** — the level 9 unlock, instanced at a small fixed capacity with
+  `count = combat.orbiters`, so it draws nothing until it is unlocked. The angle is
+  recomputed from `combat.orbiterPhase` with the *same* expression the sim uses to
+  place its damage query — smoothing or interpolating it here would make the sphere
+  damage somewhere it visibly is not.
 - **Obstacles** — static; matrices written once in `useLayoutEffect`, never in
   `useFrame`.
 - **AuraRing** — a single ground-plane ring mesh; radius and opacity driven from the

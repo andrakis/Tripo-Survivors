@@ -7,8 +7,8 @@ a game; M5 makes it look like one; M6 is the payload the project was built to de
 See [DESIGN.md](DESIGN.md) for the systems these milestones serve and
 [ARCHITECTURE.md](ARCHITECTURE.md) for how they're built.
 
-**Status:** M0–M3 done (M0/M1 2026-07-29, M2 and M3 2026-07-30). M4 (XP + progression)
-is next.
+**Status:** M0–M4 done (M0/M1 2026-07-29, M2 and M3 2026-07-30, M4 2026-07-31).
+M5 (escalation + look) is next.
 
 ---
 
@@ -252,23 +252,80 @@ card over a frozen field. The whole tick with combat at the 400 cap costs
   turned on one coin flip — it failed about a quarter of the time, on M2's own code.
   It now records tiers as they are spawned.
 
-## Milestone 4 — XP + progression ⬜ not started
+## Milestone 4 — XP + progression ✅ done (2026-07-31)
 
-- [ ] `sim/orbs.ts` — drop at death position (stride 4), magnet with acceleration
-      inside `PICKUP_R`, never expire, `MAX_ORBS = 2048`.
-- [ ] `sim/progression.ts` — `xpToNext = ceil(5 * level^1.45)`, the ordered unlock
-      table from [DESIGN.md §6.3](DESIGN.md), stat modifiers applied to live tuning.
-      The seams are already there: `combat.xp` accrues, `combat.auraR` is a field the
-      renderer reads rather than a constant, and `combat.boltEnabled` is what level 3
-      turns on (M3 ships it `true`, since a combat milestone with one weapon is not a
-      combat milestone).
-- [ ] `scene/Orbs.tsx` — instanced, emissive, `age`-pulsed scale.
-- [ ] `ui/LevelUp.tsx` — toast + screen-shake + aura flare. No modal, no pause.
-- [ ] XP bar in the HUD.
-- [ ] Test: a scripted kill sequence yields a deterministic level and unlock set.
+- [x] `sim/orbs.ts` — drop at death position (stride 4), magnet with acceleration
+      inside `PICKUP_R`, never expire, `MAX_ORBS = 2048`. The acceleration is
+      **positional** — speed interpolated from the orb's own distance — which is what
+      keeps the stride at the 4 fields [ARCHITECTURE §5.1](ARCHITECTURE.md) documents
+      and makes overshoot impossible.
+- [x] `sim/progression.ts` — `xpToNext = ceil(5 * level^1.45)`, the ordered unlock
+      table from [DESIGN.md §6.3](DESIGN.md) as `{ label, apply(loadout) }` rows, plus
+      the level 13+ repeating cycle. Unlocks write **live fields** (`combat.auraR`,
+      `combat.boltInterval`, `player.speedMul`, `orbs.magnetR`), never `TUNING`.
+- [x] Combat gained the live fields the table needs: `damageMul` (applied inside
+      `hit`, so a weapon added later cannot opt out of it), `boltCount` + spread,
+      `boltPierce`, `boltInterval`, `orbiters`, `knockback`. `createCombat` now ships
+      `boltEnabled: false` — level 3 is what turns it on.
+- [x] Kills no longer award XP. Reap queues a **drop** (`x, z, value`); step 8 turns
+      the queue into orbs; step 9 banks them on pickup. A kill you never walk back to
+      is worth nothing ([DESIGN §8](DESIGN.md)).
+- [x] `scene/Orbs.tsx` — instanced, unlit, `age`-popped scale, bob phased off
+      position. `scene/Orbiter.tsx` — the level 9 sphere, drawn from the same
+      `orbiterPhase` the damage query uses.
+- [x] `ui/LevelUp.tsx` — toast, keyed on `lastLevelAt`. No modal, no pause. The
+      world-side half is the camera shake (`scene/CameraRig.tsx`, off a decaying
+      `prog.shake`) and the aura flare, set by `stepProgression` itself.
+- [x] XP bar in the HUD: a full-width strip on the top edge, deliberately unlike the
+      HP bar in the corner.
+- [x] Tests: 25 new vitest cases — the XP curve against DESIGN §8 · every unlock's
+      effect on the live field a weapon reads · the Twin Lance fan, Orbiter cadence
+      and Concussion impulse · orb magnet, overshoot, cap and swap-remove · a scripted
+      kill sequence yielding a deterministic level and unlock set.
+- [x] `npm run verify` extended to 60 browser checks, including the orb-on-the-ground
+      path and the full level 12 unlock set.
 
 **Done when:** a normal run reaches **level 8 by ~2:30** and **level 12 by ~5:00**,
-so the whole unlock table is seen in one run.
+so the whole unlock table is seen in one run. **Verified** — 60/60 browser checks at a
+locked 60 fps, `lint`/`build`/`test` clean. The tick costs **0.20 ms** with 2000 orbs
+*and* 400 enemies live, against ARCHITECTURE §11's 2 ms. `shots/level-up.png` is the
+toast over an un-paused field. The XP/spawn arithmetic clears level 8 by 2:30 with
+room to spare (`sim/progression.test.ts`); **tightening that against a real played run
+is M5's balance pass**, which is where it was always scoped.
+
+### What M4 learned
+
+- **The printed XP table in DESIGN §8 did not match its own formula.** Levels 5, 8 and
+  12 read 53 / 106 / 191 against the formula's 52 / 102 / 184. Harmless in isolation,
+  but the cumulative column is what the "level 8 by 2:30" target is judged against, and
+  a target derived from numbers the game does not use is not a target. The formula is
+  the specification; the table is now its output, and a test asserts both.
+- **Concussion's first number ended the difficulty curve.** A velocity impulse decays
+  against the steering lerp at `STEER_RESPONSE`, so the displacement it buys is about
+  `0.17 × KNOCKBACK` — at 14 that is 2.3 units, twice a second. A brute (2.2 u/s) and
+  an elite (1.8 u/s) can then *never* close, and level 11 quietly made the player
+  untouchable. It showed up as the M3 death check failing: the harness could no longer
+  kill a level-12 character with fourteen brutes standing on them. At 7 the fast crowd
+  walks straight back in and only the heavies are held off, which is what a defensive
+  unlock should buy.
+- **A verification script that levels up stops testing what it used to.** The M3
+  checks assumed a fixed loadout, and by section 12 the player had earned four levels
+  off the crowds those checks kill — a wider aura, 25% more damage. The death path in
+  particular had to be pinned to a *fresh* run, because "does contact damage beat
+  i-frames" cannot be asked of a character whose aura is holding the crowd off. Same
+  trap as M2's and M3's, from a third direction: the harness now changes the game as a
+  side effect of exercising it.
+- **The unlock table wants to be data, and the restart is why.** Twelve levels of
+  modifiers are undone by replacing three objects (`combat`, `player`, `orbs`) — there
+  is nothing to unwind — but only because every row writes a live field instead of
+  mutating `TUNING`. Both the unit tests and a browser check assert that `TUNING` still
+  holds its config.ts values after a level-12 run, since the failure mode is a *second*
+  run of a session silently starting with the first one's stats.
+- **XP through orbs is a real mechanic, not indirection.** Routing it through a pickup
+  is what makes the field behind you worth something and what makes a far-flung kill
+  free of charge. It also moved `xp` off `combat` entirely — combat now queues a drop
+  and knows nothing about orbs, which is what kept step 8 a five-line loop in
+  [game.ts](../src/game.ts) rather than a dependency.
 
 ## Milestone 5 — Escalation + look ⬜ not started
 
@@ -282,10 +339,14 @@ so the whole unlock table is seen in one run.
       value range that competes with the cast. M3 already took the third — the
       player's see-through pass — because an invisible player made the milestone's own
       acceptance criterion unjudgeable.
-- [ ] Feedback pass: level-up shake, and a second look at the ones M3 shipped (death
-      punch, aura flare, hit vignette, `FLASH_MIX`) once there is a full run to tune
-      against.
-- [ ] Balance pass on the spawn curve against the XP curve.
+- [ ] Feedback pass: a second look at everything M3 and M4 shipped (death punch, aura
+      flare, hit vignette, `FLASH_MIX`, the level-up shake and toast) once there is a
+      full run to tune against.
+- [ ] Balance pass on the spawn curve against the XP curve. M4 checked only that the
+      two are within an order of magnitude of each other; the "level 8 by 2:30, level
+      12 by 5:00" target needs a played run, not arithmetic.
+- [ ] A second look at `KNOCKBACK` and the Orbiter's cadence against a real late run —
+      both were sized against the swarm's speeds on paper (see *What M4 learned*).
 
 **Done when:** a run is survivable for ~5 minutes by someone competent, escalation is
 legible without reading a number, and a still frame looks like a game.

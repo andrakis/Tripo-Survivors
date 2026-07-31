@@ -14,6 +14,8 @@ import { Player } from './Player';
 import { Swarm } from './Swarm';
 import { AuraRing } from './AuraRing';
 import { Projectiles } from './Projectiles';
+import { Orbs } from './Orbs';
+import { Orbiter } from './Orbiter';
 
 export function Scene() {
   // What the camera follows — written by GameLoop from the player's position each tick. Held as a
@@ -44,8 +46,12 @@ export function Scene() {
       {/* The aura is drawn before the cast so the transparent disc sorts behind the bodies standing
           in it — the player has to see what is inside the ring, not a wash over the top of it. */}
       <AuraRing />
+      {/* Orbs sit on the floor with the aura, under the cast: a field of them must never hide the
+          enemies standing on top of it (DESIGN §12 rule 3). */}
+      <Orbs />
       <Swarm />
       <Projectiles />
+      <Orbiter />
       <Player />
       <CameraRig focus={focus} />
     </>

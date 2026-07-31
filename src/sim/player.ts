@@ -22,6 +22,12 @@ export interface Player {
   maxHp: number;
   /** Seconds of invulnerability remaining. Also drives the blink in scene/Player.tsx. */
   iframe: number;
+  /**
+   * Multiplier on PLAYER_SPEED. The level 8 unlock and the level 13+ cycle raise it (DESIGN §6.3) —
+   * the same live-field seam `combat.auraR` uses, kept here rather than in progression so the one
+   * function that moves the player reads one number.
+   */
+  speedMul: number;
 }
 
 export function createPlayer(): Player {
@@ -34,6 +40,7 @@ export function createPlayer(): Player {
     hp: TUNING.PLAYER_HP,
     maxHp: TUNING.PLAYER_HP,
     iframe: 0,
+    speedMul: 1,
   };
 }
 
@@ -49,8 +56,9 @@ export function stepPlayer(p: Player, ix: number, iz: number, dt: number): void 
   // control feel is the one thing in this milestone that must not change between a 60 Hz laptop and
   // a 144 Hz monitor. Same reasoning as the camera (ARCHITECTURE §9).
   const k = 1 - Math.exp(-TUNING.PLAYER_RESPONSE * dt);
-  p.vx += (ix * TUNING.PLAYER_SPEED - p.vx) * k;
-  p.vz += (iz * TUNING.PLAYER_SPEED - p.vz) * k;
+  const speed = TUNING.PLAYER_SPEED * p.speedMul;
+  p.vx += (ix * speed - p.vx) * k;
+  p.vz += (iz * speed - p.vz) * k;
 
   p.x += p.vx * dt;
   p.z += p.vz * dt;

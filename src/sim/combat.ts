@@ -18,6 +18,8 @@ import {
   E_FLASH,
   E_HP,
   E_TIER,
+  E_VX,
+  E_VZ,
   E_X,
   E_Z,
   ENEMY_STRIDE,
@@ -41,28 +43,59 @@ export const D_Z = 1;
 export const D_TIER = 2;
 export const D_AGE = 3;
 
+/** One queued XP drop: where a body fell and what it was worth. Consumed by orbs, step 8. */
+export const DROP_STRIDE = 3;
+export const DR_X = 0;
+export const DR_Z = 1;
+export const DR_VALUE = 2;
+
 export interface Combat {
   /** Seconds until the next aura pulse. */
   auraTimer: number;
   /** Decaying 0..1 flare, written on each pulse. Renderer-only — nothing in the sim reads it. */
   auraFlare: number;
-  /** Live aura radius. A field rather than a constant because M4's level 2 grows it (DESIGN §6.3). */
+  /** Live aura radius. Level 2 grows it, level 13+ scales it (DESIGN §6.3). */
   auraR: number;
   boltTimer: number;
   /**
-   * Whether the Lance is firing. DESIGN §6.3 unlocks it at level 3, but M3 has no progression yet
-   * and a combat milestone that ships one of its two weapons is not a combat milestone. M4's
-   * unlock table flips this to `false` at run start and back on at level 3.
+   * Whether the Lance is firing. Off at run start; the level 3 unlock turns it on (DESIGN §6.3).
+   *
+   * M3 shipped it `true` because a combat milestone with one of its two weapons is not a combat
+   * milestone. M4 owns the progression that gates it, so the default flips here.
    */
   boltEnabled: boolean;
+  /** Live fire interval, aura radius's opposite number: level 6 and the late cycle shorten it. */
+  boltInterval: number;
+  /** Live pierce budget per bolt. Level 5 adds 2. */
+  boltPierce: number;
+  /** Bolts per shot, fanned over ±BOLT_SPREAD. 1 until Twin Lance at level 7. */
+  boltCount: number;
+  /** Multiplier on every damage source in this file. Level 4, then the late cycle. */
+  damageMul: number;
+  /** Orbiting spheres circling the player. 0 until level 9. */
+  orbiters: number;
+  /** Orbit phase in radians. Advances whether or not any orbiter exists, so unlocking one at level 9
+   *  does not start it from a fixed angle every run. */
+  orbiterPhase: number;
+  /** Seconds until the next orbiter damage tick. */
+  orbiterTimer: number;
+  /** Outward impulse an aura pulse applies to what it hits. 0 until Concussion at level 11. */
+  knockback: number;
   bolts: Float32Array;
   nb: number;
   /** Death markers: purely visual, but they live here because deciding when one exists is sim work. */
   deaths: Float32Array;
   nd: number;
   kills: number;
-  /** Raw XP earned. M4's progression.ts consumes it; M3 only shows it on the game-over card. */
-  xp: number;
+  /**
+   * XP drops queued by this tick's reap, drained by orbs in step 8 and reset here every tick.
+   *
+   * A queue rather than combat calling `spawnOrb` directly, because the tick order in
+   * ARCHITECTURE §6 has combat at step 7 and orb spawning at step 8 — and because it keeps this file
+   * from knowing that orbs exist. Bounded by MAX_ENEMIES: a tick cannot kill more than it has.
+   */
+  drops: Float32Array;
+  nDrops: number;
   /**
    * Per-enemy "already hit by this swept segment" stamp. A bolt's per-tick movement is sampled at
    * several points along the segment and the sample discs overlap, so without this an enemy sitting
@@ -74,19 +107,34 @@ export interface Combat {
   scratch: Int32Array;
 }
 
+/**
+ * A fresh, LEVEL 1 combat state. Every live field here is the baseline the unlock table in
+ * sim/progression.ts modifies, which is also why `resetGame` replaces this object wholesale rather
+ * than zeroing it: a restart has to undo twelve levels of modifiers, and a reset that has to
+ * remember every one of them is a reset that will one day forget one.
+ */
 export function createCombat(): Combat {
   return {
     auraTimer: 0,
     auraFlare: 0,
     auraR: TUNING.AURA_R,
     boltTimer: 0,
-    boltEnabled: true,
+    boltEnabled: false,
+    boltInterval: TUNING.BOLT_INTERVAL,
+    boltPierce: TUNING.BOLT_PIERCE,
+    boltCount: 1,
+    damageMul: 1,
+    orbiters: 0,
+    orbiterPhase: Math.random() * Math.PI * 2,
+    orbiterTimer: 0,
+    knockback: 0,
     bolts: new Float32Array(TUNING.MAX_BOLTS * BOLT_STRIDE),
     nb: 0,
     deaths: new Float32Array(TUNING.MAX_DEATHS * DEATH_STRIDE),
     nd: 0,
     kills: 0,
-    xp: 0,
+    drops: new Float32Array(TUNING.MAX_ENEMIES * DROP_STRIDE),
+    nDrops: 0,
     stamp: new Int32Array(TUNING.MAX_ENEMIES),
     stampId: 0,
     scratch: new Int32Array(TUNING.MAX_ENEMIES),
@@ -96,13 +144,17 @@ export function createCombat(): Combat {
 /**
  * Apply damage to one enemy. Does NOT remove it — see `reap` below for why that is deferred.
  *
+ * `base` is the weapon's number straight out of TUNING; the `damageMul` the unlock table has built
+ * up is applied HERE rather than at each call site, so a weapon added later cannot accidentally opt
+ * out of the level 4 damage unlock by forgetting to multiply.
+ *
  * Already-dead enemies are skipped rather than damaged again: within one tick the aura and a bolt
  * can both land on the same body, and without this the second hit would count a second kill.
  */
-function hit(s: Swarm, i: number, amount: number): void {
+function hit(c: Combat, s: Swarm, i: number, base: number): void {
   const b = i * ENEMY_STRIDE;
   if (s.data[b + E_HP] <= 0) return;
-  s.data[b + E_HP] -= amount;
+  s.data[b + E_HP] -= base * c.damageMul;
   s.data[b + E_FLASH] = TUNING.FLASH_TIME;
 }
 
@@ -138,32 +190,97 @@ function reap(c: Combat, s: Swarm): void {
       continue;
     }
     const tier = d[b + E_TIER];
-    addDeath(c, d[b + E_X], d[b + E_Z], tier);
+    const x = d[b + E_X];
+    const z = d[b + E_Z];
+    addDeath(c, x, z, tier);
     c.kills++;
-    c.xp += TIERS[tier].xp;
+    // The XP is not awarded here — it is queued as a drop, and only banked if the player walks over
+    // the orb it becomes (DESIGN §8). Killing something at the far end of the arena earns nothing
+    // until you go and get it.
+    const db = c.nDrops++ * DROP_STRIDE;
+    c.drops[db + DR_X] = x;
+    c.drops[db + DR_Z] = z;
+    c.drops[db + DR_VALUE] = TIERS[tier].xp;
     killEnemy(s, i);
   }
 }
 
-/** One aura pulse: flat damage to everything inside the ring, no falloff (DESIGN §6.1). */
+/**
+ * One aura pulse: flat damage to everything inside the ring, no falloff (DESIGN §6.1), plus the
+ * Concussion knockback once level 11 has set it.
+ *
+ * The knockback is added to VELOCITY rather than to position. A positional shove would push a front
+ * rank straight through a prop — the same failure the swarm's separation push is clamped to avoid
+ * (sim/swarm.ts step 4) — while an impulse is spent through the ordinary steering lerp, which means
+ * obstacles and bounds still get their say on the way out.
+ */
 function pulseAura(c: Combat, p: Player, s: Swarm, g: Grid): void {
   c.auraFlare = 1;
-  const n = queryNeighbors(g, s.data, ENEMY_STRIDE, s.n, p.x, p.z, c.auraR, c.scratch);
-  for (let k = 0; k < n; k++) hit(s, c.scratch[k], TUNING.AURA_DAMAGE);
+  const d = s.data;
+  const n = queryNeighbors(g, d, ENEMY_STRIDE, s.n, p.x, p.z, c.auraR, c.scratch);
+  for (let k = 0; k < n; k++) {
+    const e = c.scratch[k];
+    hit(c, s, e, TUNING.AURA_DAMAGE);
+    if (c.knockback <= 0) continue;
+    const b = e * ENEMY_STRIDE;
+    const dx = d[b + E_X] - p.x;
+    const dz = d[b + E_Z] - p.z;
+    // An enemy standing exactly on the player has no outward direction; leave it to separation.
+    const len = Math.hypot(dx, dz);
+    if (len <= 1e-4) continue;
+    d[b + E_VX] += (dx / len) * c.knockback;
+    d[b + E_VZ] += (dz / len) * c.knockback;
+  }
 }
 
+/**
+ * The Orbiter (level 9): spheres circling the player, damaging what they pass through.
+ *
+ * The damage is a **cadence**, not a contact test. A true contact test needs to remember which
+ * enemies each sphere is currently inside, or it lands every tick and a single orbiter does 300 dps;
+ * remembering it needs a per-enemy field, and the SoA's stride is a documented contract
+ * (ARCHITECTURE §5.1) that a second weapon's bookkeeping does not get to widen. On a 5/s cadence the
+ * sphere sweeps its arc between hits and everything it passed gets caught by the next one, which is
+ * the same trade the aura already makes and nobody can see the difference.
+ */
+function stepOrbiters(c: Combat, p: Player, s: Swarm, g: Grid, dt: number): void {
+  c.orbiterPhase = (c.orbiterPhase + TUNING.ORBITER_SPIN * dt) % (Math.PI * 2);
+  c.orbiterTimer -= dt;
+  if (c.orbiterTimer > 0) return;
+  c.orbiterTimer += 1 / TUNING.ORBITER_RATE;
+  if (c.orbiterTimer <= 0) c.orbiterTimer = 1 / TUNING.ORBITER_RATE;
+  if (c.orbiters <= 0) return;
+
+  for (let k = 0; k < c.orbiters; k++) {
+    const a = c.orbiterPhase + (k / c.orbiters) * Math.PI * 2;
+    const ox = p.x + Math.cos(a) * TUNING.ORBITER_R;
+    const oz = p.z + Math.sin(a) * TUNING.ORBITER_R;
+    const n = queryNeighbors(g, s.data, ENEMY_STRIDE, s.n, ox, oz, TUNING.ORBITER_HIT_R, c.scratch);
+    for (let q = 0; q < n; q++) hit(c, s, c.scratch[q], TUNING.ORBITER_DAMAGE);
+  }
+}
+
+/**
+ * Fire one volley: `boltCount` bolts fanned symmetrically over ±BOLT_SPREAD about facing.
+ *
+ * A single bolt gets angle 0 rather than an edge of the fan, so Twin Lance (level 7) widens the
+ * shot around where the player was already aiming instead of moving the shot they had learned.
+ */
 function fireBolt(c: Combat, p: Player): void {
-  if (c.nb >= TUNING.MAX_BOLTS) return;
-  const b = c.nb++ * BOLT_STRIDE;
-  // facing is atan2(x, z) — 0 is +Z — so the heading is (sin, cos), not the usual (cos, sin).
-  const dx = Math.sin(p.facing);
-  const dz = Math.cos(p.facing);
-  c.bolts[b + B_X] = p.x;
-  c.bolts[b + B_Z] = p.z;
-  c.bolts[b + B_VX] = dx * TUNING.BOLT_SPEED;
-  c.bolts[b + B_VZ] = dz * TUNING.BOLT_SPEED;
-  c.bolts[b + B_LIFE] = TUNING.BOLT_RANGE / TUNING.BOLT_SPEED;
-  c.bolts[b + B_PIERCE] = TUNING.BOLT_PIERCE;
+  const count = c.boltCount;
+  for (let k = 0; k < count; k++) {
+    if (c.nb >= TUNING.MAX_BOLTS) return;
+    const spread = count > 1 ? (-1 + (2 * k) / (count - 1)) * TUNING.BOLT_SPREAD : 0;
+    const a = p.facing + spread;
+    const b = c.nb++ * BOLT_STRIDE;
+    // facing is atan2(x, z) — 0 is +Z — so the heading is (sin, cos), not the usual (cos, sin).
+    c.bolts[b + B_X] = p.x;
+    c.bolts[b + B_Z] = p.z;
+    c.bolts[b + B_VX] = Math.sin(a) * TUNING.BOLT_SPEED;
+    c.bolts[b + B_VZ] = Math.cos(a) * TUNING.BOLT_SPEED;
+    c.bolts[b + B_LIFE] = TUNING.BOLT_RANGE / TUNING.BOLT_SPEED;
+    c.bolts[b + B_PIERCE] = c.boltPierce;
+  }
 }
 
 function removeBolt(c: Combat, i: number): void {
@@ -244,7 +361,7 @@ function stepBolts(c: Combat, s: Swarm, g: Grid, dt: number): void {
         if (qx * qx + qz * qz > hitR2) continue;
 
         c.stamp[e] = id;
-        hit(s, e, TUNING.BOLT_DAMAGE);
+        hit(c, s, e, TUNING.BOLT_DAMAGE);
         // Hits within a single tick are resolved in grid order rather than in order along the
         // segment. At 0.43 units of travel a bolt almost never meets two enemies in one tick, and
         // when it does they are inside each other's separation radius, so ordering them buys a
@@ -287,6 +404,10 @@ function stepDeaths(c: Combat, dt: number): void {
  */
 export function stepCombat(c: Combat, p: Player, s: Swarm, g: Grid, dt: number): void {
   c.auraFlare = Math.max(0, c.auraFlare - dt / TUNING.AURA_FLARE);
+  // Last tick's drops were consumed by step 8. Clearing at the START rather than after the drain
+  // means the queue is exactly "what died this tick" for anything that looks at it, including a
+  // debugger stopped anywhere in the frame.
+  c.nDrops = 0;
 
   const alive = isAlive(p);
 
@@ -301,10 +422,12 @@ export function stepCombat(c: Combat, p: Player, s: Swarm, g: Grid, dt: number):
 
   c.boltTimer -= dt;
   if (c.boltTimer <= 0) {
-    c.boltTimer += TUNING.BOLT_INTERVAL;
-    if (c.boltTimer <= 0) c.boltTimer = TUNING.BOLT_INTERVAL;
+    c.boltTimer += c.boltInterval;
+    if (c.boltTimer <= 0) c.boltTimer = c.boltInterval;
     if (alive && c.boltEnabled) fireBolt(c, p);
   }
+
+  if (alive) stepOrbiters(c, p, s, g, dt);
 
   stepBolts(c, s, g, dt);
   reap(c, s);

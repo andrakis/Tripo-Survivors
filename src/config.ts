@@ -69,6 +69,36 @@ export const TUNING = {
   BOLT_RANGE: 22,
   BOLT_PIERCE: 1, // enemies a bolt passes through
   BOLT_R: 0.25, // bolt collision radius, added to UNIT_R for the swept-segment test
+  BOLT_SPREAD: (12 * Math.PI) / 180, // Twin Lance half-angle (DESIGN §6.3, level 7): ±12°
+
+  // --- unlocks that arrive as whole mechanics (DESIGN §6.3) ---
+  ORBITER_R: 2.4, // orbit radius. Inside the level-2 aura (4.0) on purpose: the Orbiter is a second
+  // ring of damage the player already knows how to position, not a new range band to learn.
+  ORBITER_SPIN: 2.6, // radians/sec
+  ORBITER_HIT_R: 0.9, // damage radius around the sphere itself
+  ORBITER_DAMAGE: 5,
+  ORBITER_RATE: 5, // hits per second. Contact damage on a cadence rather than continuously — see
+  // sim/combat.ts stepOrbiters for why a true contact test would need per-enemy state.
+  KNOCKBACK: 7, // Concussion (level 11): outward velocity added to everything an aura pulse hits.
+  // A velocity impulse, not a teleport: the swarm's steering lerp bleeds it off against the flow
+  // heading at STEER_RESPONSE, so the net displacement is about 0.17 × this — ~1.2 units per pulse —
+  // and it reads as a shove the crowd then walks back through.
+  //
+  // The size is load-bearing and was found by playing it. At 14 the shove outruns everything slower
+  // than a runner: pushed 2.3 u twice a second, a brute (2.2 u/s) and an elite (1.8 u/s) can never
+  // close, and level 11 quietly ends the run's difficulty curve. At 7 the fast crowd walks straight
+  // back in and only the heavies are held off — which is what a defensive unlock should buy.
+
+  // --- XP orbs (DESIGN §8) ---
+  ORB_SPEED_MIN: 3.5, // magnet speed at the rim of the pickup radius...
+  ORB_SPEED_MAX: 30, // ...and at the player. The gap is what makes a pickup snap rather than drift.
+  ORB_TOUCH: 0.9, // distance at which an orb is banked
+  ORB_POP: 0.25, // seconds an orb spends scaling up out of the body that dropped it
+
+  // --- level-up feedback (DESIGN §12 rule 4, applied to the good news) ---
+  SHAKE_TIME: 0.35, // seconds a level-up shake takes to decay to nothing
+  SHAKE_AMP: 0.55, // world units of camera displacement at full amplitude
+  SHAKE_FREQ: 34, // rad/s. Fast enough to read as an impact rather than as a camera fault.
 
   // --- hit feedback (DESIGN §12 rule 4) ---
   FLASH_TIME: 0.12, // enemy hit-flash decay. Long enough to see at 60 fps, short enough that a crowd
@@ -94,6 +124,7 @@ export const TUNING = {
   // --- progression (DESIGN §8) ---
   XP_BASE: 5,
   XP_EXP: 1.45, // xpToNext(level) = ceil(XP_BASE * level ** XP_EXP)
+  LATE_STEP: 1.1, // the level 13+ repeating cycle: +10% to one stat per level (DESIGN §6.3)
 
   // --- camera (ARCHITECTURE §9) ---
   CAM_OFFSET: [0, 26, 26] as const, // ~45° down, fixed world yaw, never rotates
