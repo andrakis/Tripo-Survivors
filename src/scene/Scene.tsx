@@ -16,6 +16,7 @@ import { AuraRing } from './AuraRing';
 import { Projectiles } from './Projectiles';
 import { Orbs } from './Orbs';
 import { Orbiter } from './Orbiter';
+import { Boosts } from './Boosts';
 
 export function Scene() {
   // What the camera follows — written by GameLoop from the player's position each tick. Held as a
@@ -52,6 +53,9 @@ export function Scene() {
       <Swarm />
       <Projectiles />
       <Orbiter />
+      {/* Boosts draw AFTER the crowd on purpose. An orb hiding behind an enemy costs one XP; a
+          boost hiding behind one costs the fifteen seconds the player went to fetch it. */}
+      <Boosts />
       <Player />
       <CameraRig focus={focus} />
     </>

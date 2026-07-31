@@ -9,6 +9,14 @@
 
 import { create } from 'zustand';
 
+/** One upgrade card. The functions stay in the sim — the UI only ever needs three strings and an
+ *  index to send back through `chooseUpgrade`. */
+export interface OfferCard {
+  id: string;
+  label: string;
+  detail: string;
+}
+
 export interface UiState {
   hp: number;
   maxHp: number;
@@ -28,6 +36,21 @@ export interface UiState {
    */
   lastLevelAt: number;
   unlock: string;
+  /**
+   * The upgrade cards on offer. Non-empty means the run is PAUSED waiting for a pick — the sim
+   * short-circuits on the same condition, so this doubles as the pause flag and the two can never
+   * disagree about whether the game is running.
+   */
+  offers: readonly OfferCard[];
+  /** Remaining seconds per boost kind, indexed by config's BOOSTS order. */
+  boostTimers: readonly number[];
+  /** Run time of the last boost pickup and which kind, for the toast. Same value-keyed pattern as
+   *  `lastHitAt` — two pickups in quick succession must play two announcements. */
+  lastBoostAt: number;
+  lastBoostKind: number;
+  /** Dash cooldown remaining and its current full length, for the HUD meter. */
+  dashCd: number;
+  dashCdMax: number;
   dead: boolean;
   /**
    * Run time at which the player last took a hit. The HUD keys its vignette off this VALUE rather
@@ -54,6 +77,12 @@ const EMPTY: UiState = {
   level: 1,
   lastLevelAt: -1,
   unlock: '',
+  offers: [],
+  boostTimers: [],
+  lastBoostAt: -1,
+  lastBoostKind: -1,
+  dashCd: 0,
+  dashCdMax: 2.2,
   dead: false,
   lastHitAt: -1,
   runId: 0,

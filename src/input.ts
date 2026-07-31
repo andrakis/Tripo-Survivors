@@ -10,6 +10,14 @@
 export interface InputVector {
   x: number;
   z: number;
+  /**
+   * True on exactly ONE tick per press of the dash key.
+   *
+   * An edge rather than a held flag, because the dash is a discrete action on a cooldown: a held
+   * button that re-fired the instant the cooldown expired would make "hold space" strictly better
+   * than tapping it, which is a control the player is punished for using naturally.
+   */
+  dash: boolean;
 }
 
 /**
@@ -33,12 +41,30 @@ const KEY_MAP: Record<string, readonly [number, number]> = {
   ArrowRight: [1, 0],
 };
 
+/** The dash keys. Space is the primary; Shift is there for players whose thumb is already on it. */
+const DASH_KEYS = new Set(['Space', 'ShiftLeft', 'ShiftRight']);
+
 const held = new Set<string>();
-const touch: InputVector = { x: 0, z: 0 };
+const touch = { x: 0, z: 0 };
+/** Set by a producer, cleared by the tick that consumes it — see `InputVector.dash`. */
+let dashQueued = false;
+
+/** Queue a dash from anywhere. The touch button (ui/TouchControls.tsx) is the other caller. */
+export function queueDash(): void {
+  dashQueued = true;
+}
 
 /** Attach the keyboard producer to `window`. Returns the detach function, for an effect cleanup. */
 export function attachKeyboard(target: Window = window): () => void {
   const onDown = (e: KeyboardEvent) => {
+    if (DASH_KEYS.has(e.code)) {
+      // `repeat` guard: holding the key must not machine-gun a queued dash on every OS key-repeat,
+      // which would spend the cooldown the instant it came back for as long as the key was down.
+      if (!e.repeat) dashQueued = true;
+      // Space scrolls the page, and on a full-screen canvas that reads as the game jumping.
+      e.preventDefault();
+      return;
+    }
     if (!(e.code in KEY_MAP)) return;
     held.add(e.code);
     // Arrows scroll the page, and on a full-screen canvas that shows up as the whole game sliding.
@@ -49,7 +75,10 @@ export function attachKeyboard(target: Window = window): () => void {
   };
   // Alt-tabbing away mid-run never delivers the keyup, so without this the character keeps running
   // in a direction the player is no longer holding — for the rest of the run.
-  const onBlur = () => held.clear();
+  const onBlur = () => {
+    held.clear();
+    dashQueued = false;
+  };
 
   target.addEventListener('keydown', onDown);
   target.addEventListener('keyup', onUp);
@@ -75,6 +104,10 @@ export function setTouchVector(x: number, z: number): void {
  * from a stale pointer quietly bias keyboard movement, and nobody is using both at once anyway.
  */
 export function sampleInput(out: InputVector): void {
+  // Consumed here and nowhere else, so exactly one tick ever sees a given press.
+  out.dash = dashQueued;
+  dashQueued = false;
+
   let x = 0;
   let z = 0;
   for (const code of held) {
@@ -102,9 +135,10 @@ export function sampleInput(out: InputVector): void {
   out.z = touch.z;
 }
 
-/** Test seam: drop all held keys and centre the stick. */
+/** Test seam: drop all held keys, centre the stick, and forget any queued dash. */
 export function resetInput(): void {
   held.clear();
   touch.x = 0;
   touch.z = 0;
+  dashQueued = false;
 }

@@ -88,14 +88,21 @@ This is the whole game in ten seconds, and it works with one weapon and one enem
    kill -> orbs -> XP -> LEVEL UP -> new skill or stat -> kill faster -> ...
 ```
 
-Level-ups are **automatic**: no pause, no card-pick menu. The next entry in a fixed
-ordered table applies instantly with a toast and a screen-shake.
+Level-ups come in two flavours (§6.3). **Weapon levels are automatic** — no pause, no
+menu, just a toast, a flare and a screen-shake over an un-stopped fight. **Stat levels
+offer three cards** and pause the run until one is taken.
 
-> **Why no card picks?** Vampire Survivors' draft is great design and the obvious
-> thing to copy — we're deliberately not. A modal pick screen stops the action, adds
-> a UI system, and adds build-variance that makes the game harder to demo
-> reproducibly. A fixed order means every recording of the tutorial hits the same
-> beats at the same times. Build variety is listed as a post-v1 extension (§11).
+> **Why both, rather than one or the other?** The original design had no card picks at
+> all: a modal stops the action, adds a UI system, and adds build-variance that makes
+> the game harder to demo reproducibly. Two of those three held up. The third did not —
+> a fixed table makes progression something that happens *to* the player, which is a
+> strange thing for the demo vehicle of a systems tutorial to demonstrate, and a viewer
+> following along has no build of their own to talk about.
+>
+> The split keeps what the fixed order was actually protecting. Every recording still
+> hits the Lance at 3, Pierce at 5 and the Orbiter at 9 — the beats a tutorial scripts
+> around — while the stat line is the player's. And the pause is confined to the one
+> screen that asks a question.
 
 ### 4.3 Macro — the run (5–8 minutes)
 
@@ -114,15 +121,42 @@ the game-over card next to level and kills.
 
 | Stat | Base | Notes |
 |---|---|---|
-| Max HP | 100 | Level 12 grants +25 and a full heal |
+| Max HP | 100 | The Max HP upgrade grants +25 and a full heal |
 | Move speed | 7.0 u/s | Meaningfully faster than a grunt (3.4) and a brute (2.2); *slower* than a runner (5.2) |
 | Collision radius | 0.6 | |
 | Invulnerability after a hit | 0.6 s | Flash the model; prevents a crowd deleting you in one frame |
-| Pickup radius | 3.0 u | Grows with the Magnet stat |
+| Pickup radius | 3.0 u | Grows with the Magnet upgrade |
 
 Speed tuning is the core balance lever. The player outruns the bulk of the swarm but
 **cannot outrun a runner**, so runners are the reason you can't simply hold one
 direction forever — they arrive first, alone, and force you to turn and clear them.
+
+### 5.1 The dash
+
+| | |
+|---|---|
+| Speed | 30 u/s |
+| Duration | 0.16 s (~4.8 u of travel) |
+| Cooldown | 2.2 s, shortened by an upgrade |
+| I-frames | 0.22 s |
+| Input | Space or Shift; a button on the right thumb on touch |
+
+The one *discrete* action in a game whose only other verb is a direction. It exists
+because position is the whole game and the character has exactly one speed: without a
+dash, a bad position is a slow, legible, unrecoverable death, and the player watches it
+happen for two seconds. The dash is the answer to "I am already surrounded".
+
+Three details carry it:
+
+- **It goes through, not away.** 4.8 units is a front rank's depth, not an escape
+  across the arena — the correct use is *into* the gap, which keeps the player near the
+  crowd where the aura works.
+- **The i-frames outlast the movement** (0.22 vs 0.16 s). A dash that ends inside a
+  crowd and immediately takes contact damage is a trap, and a trap on the button the
+  player presses when panicking is the worst possible one.
+- **It is an edge, not a held state.** Holding the key dashes once. Otherwise "hold
+  the dash button" would be strictly better than tapping it, and a control the player
+  is punished for using naturally is a bad control.
 
 ## 6. Weapons
 
@@ -164,25 +198,83 @@ The bolt rewards *facing* — and since facing comes from movement, it rewards
 the optimal line is to retreat while periodically turning into the crowd to land a
 piercing bolt down its length.
 
-### 6.3 Unlock order
+### 6.3 Levelling: a fixed weapon spine, a chosen stat line
 
-Level-ups apply this table in order. Odd levels tend to add capability, even levels
-tend to add numbers, so every level feels different from the last.
+A level-up is one of two things, and the level number decides which.
+
+**Odd levels 3–11 grant a weapon, automatically and in order.** These are the
+capability unlocks and they are the run's power spine. They are not choosable: a player
+who could decline the Lance would have a run with no Lance, and the reason level 3
+feels different from level 4 in *every* run is that this table never varies.
 
 | Level | Unlock |
 |---|---|
-| 2 | Aura radius **+1.0** |
-| 3 | **NEW — Lance** (the bolt begins firing) |
-| 4 | Damage **+25%** (all sources) |
-| 5 | **NEW — Pierce**: bolts pass through 2 more enemies |
-| 6 | Fire rate **+20%** |
-| 7 | **NEW — Twin Lance**: a second bolt at ±12° |
-| 8 | Move speed **+10%** |
-| 9 | **NEW — Orbiter**: one sphere circles the player, damaging on contact |
-| 10 | Magnet radius **+50%** |
-| 11 | **NEW — Concussion**: aura pulses knock enemies back |
-| 12 | Max HP **+25** and heal to full |
-| 13+ | Repeating cycle — damage, fire rate, aura radius, move speed — at **+10%** each |
+| 3 | **Lance** — the bolt begins firing |
+| 5 | **Pierce** — bolts pass through 2 more enemies |
+| 7 | **Twin Lance** — a second bolt at ±12° |
+| 9 | **Orbiter** — a sphere circles the player, damaging on contact |
+| 11 | **Concussion** — aura pulses knock enemies back |
+
+**Every other level offers a choice of three**, drawn from the pool below, and the run
+**pauses** until one is taken. This is the only pause in the game and the only screen
+with a decision on it. It pauses because it asks a question, and asking one while a
+crowd closes in makes it a reflex test rather than a choice — everything else in the
+game (the toast, the flare, the shake) is designed specifically *not* to interrupt.
+
+| Upgrade | Effect |
+|---|---|
+| Aura radius | **+1.0** |
+| Damage | **+25%**, all sources |
+| Fire rate | **+20%** — offered only once the Lance exists |
+| Move speed | **+10%** |
+| Max HP | **+25** and heal to full |
+| Magnet radius | **+50%** |
+| Dash cooldown | **−20%** |
+
+Every entry is repeatable and there is no "taken" state, so a level 40 run still has
+three real cards to read. The offer is three distinct entries; stacking is plain
+multiplication on a live field, so two Damage picks are ×1.25 twice with no special
+case.
+
+> **This replaces the fixed table v1 shipped with, and reverses the §11 non-goal.** The
+> fixed order was chosen to keep the run legible and the code small; in play it made the
+> whole progression system something that happened *to* the player, which is a strange
+> thing for the demo vehicle of a systems tutorial to demonstrate. The compromise is
+> above: the spine stays fixed so runs stay comparable, the stats become the build.
+> Weapon unlocks joining the pool is the obvious next step and the code is shaped for it
+> — `AUTO_UNLOCKS` and `UPGRADES` are the same type.
+
+### 6.4 Boosts
+
+Pickups that spawn on the field on a jittered timer (~40 s ± 14, first at 25 s) and lie
+there until collected. They land 11–26 units from the player: the near end is on screen
+the moment it appears, the far end is a reason to look around.
+
+| Boost | Effect | Duration |
+|---|---|---|
+| **Magnet** | every XP orb on the map starts coming to you | instant |
+| **Invincible** | no damage at all | 15 s |
+| **Quad Damage** | ×4 outbound damage | 15 s |
+| **Guns Akimbo** | double the bolts per volley | 15 s |
+| **Bloodlust** | +1 HP per kill | 30 s |
+
+They exist to break the run's monotonic pressure curve. Everything else ramps — the
+spawn rate, the tiers, the player's own stats — and a run that only ramps has no shape.
+A boost is fifteen seconds where the arithmetic is different and the correct play
+changes: Quad Damage says go and stand in the crowd, Invincible says the same for a
+different reason, Magnet says stop fighting and cash in, and Bloodlust turns a losing
+fight into the way you heal.
+
+Rules that follow from that:
+
+- **Duration restarts, it does not stack.** A second Quad Damage at three seconds left
+  gives fifteen, not eighteen. Stacking lets a player bank an unbroken multiplier across
+  a run, and the point of a boost is that it ends.
+- **Boosts and upgrades never share a field.** A boost expires; a run's permanent
+  upgrades must not. Quad Damage multiplies a separate `boostMul`, so the first one to
+  run out cannot take the player's Damage picks with it.
+- **The last three seconds flash**, on the model and on the HUD chip. A boost ending is
+  something the player should see coming, not discover by taking a hit.
 
 ## 7. The swarm
 
@@ -264,6 +356,25 @@ like a snap rather than a drift). Orbs never expire — the field of uncollected
 behind you is a visible record of where you've been, and cashing it in is the
 comeback mechanic when a run goes badly.
 
+**An orb that has started coming always arrives.** Entering the magnet radius sets a
+latch that is never cleared, and a latched orb moves at least 1.7× the player's *current*
+speed. Without the latch, a few Move Speed picks make the character faster than an orb
+at the rim of their own magnet: it visibly chases, falls behind, drops out of range and
+stops. An orb that gives up reads as the pickup being broken, not as a speed stat
+working.
+
+**Orbs merge as they age.** Once the field passes 120, uncollected orbs older than 12
+seconds that share a 4-unit cell consolidate into one carrying the sum of their values,
+twice a second. No XP is ever lost — a merged orb is worth exactly what went into it —
+and merged orbs are larger and a different colour by value (cyan → green → gold →
+magenta), so a consolidated field still tells you where the money is.
+
+Three conditions gate the merge, and each protects something: the field-size threshold
+keeps the early scattered trail intact (it *is* the record of where you've been, and
+consolidating it early deletes the thing it's for), the age requirement means an orb
+must have been genuinely ignored rather than jumping sideways in front of a player
+who's still fighting, and orbs already on their way are nobody's to move.
+
 ## 9. The arena
 
 A single flat **256 × 256** unit ground plane, bounded — the player is clamped at the
@@ -302,7 +413,9 @@ the game-over card.
 
 Listed so they don't get argued twice:
 
-- **No card-draft level-ups** (see §4.2) — fixed table instead.
+- ~~**No card-draft level-ups** — fixed table instead.~~ **Reversed.** A three-card
+  choice at every non-weapon level shipped after v1; see §6.3 for what changed and why.
+  The weapon spine stayed fixed, which is the half of the original argument that held up.
 - **No meta-progression** between runs. Each run starts identical; this is a demo,
   and a demo that requires 40 minutes of unlocks to look good is a bad demo.
 - **No sound.** Deferred entirely; it's orthogonal to the model-import story.
@@ -311,8 +424,8 @@ Listed so they don't get argued twice:
   ([ROADMAP.md](ROADMAP.md) M6).
 - **No worker/GPU simulation.** The CPU path at 400 units is the whole point.
 
-Post-v1 candidates, in rough priority: build variety via a card draft, a boss at
-5:00, sound, and a second arena.
+Post-v1 candidates, in rough priority: weapon unlocks joining the choice pool (§6.3), a
+boss at 5:00, sound, and a second arena.
 
 ## 12. Readability rules
 

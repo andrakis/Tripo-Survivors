@@ -20,6 +20,7 @@ const GHOST = 0.45;
 
 export function Player() {
   const group = useRef<THREE.Group>(null!);
+  const shell = useRef<THREE.Mesh>(null!);
   const actor = ACTORS.player;
   const geometry = useMemo(() => actor.primitive(), [actor]);
   const material = useMemo(
@@ -59,7 +60,21 @@ export function Player() {
     [actor],
   );
 
-  useFrame(() => {
+  /** The Invincible boost's shell. Transparent, unlit, and only ever visible while it is running. */
+  const shellMaterial = useMemo(
+    () =>
+      new THREE.MeshBasicMaterial({
+        color: 0xffe9a8,
+        transparent: true,
+        opacity: 0.16,
+        depthWrite: false,
+        side: THREE.BackSide, // inside-out, so it reads as a bubble around the player rather than
+        // as a blob over them — the one actor that must never be obscured is the one inside it.
+      }),
+    [],
+  );
+
+  useFrame((state) => {
     const p = game.player;
     const g = group.current;
     g.position.set(p.x, 0, p.z);
@@ -69,6 +84,17 @@ export function Player() {
     const blink = p.iframe > 0 && Math.floor(p.iframe * BLINK_HZ * 2) % 2 === 1;
     material.opacity = blink ? 0.3 : 1;
     ghost.opacity = blink ? 0.15 : GHOST;
+
+    // The shell breathes, and flickers over the last two seconds so the boost's expiry is something
+    // the player sees coming rather than something they discover by taking a hit.
+    const inv = p.invincible;
+    shell.current.visible = inv > 0;
+    if (inv > 0) {
+      const t = state.clock.elapsedTime;
+      const warn = inv < 2 ? 0.45 + 0.55 * Math.abs(Math.sin(t * 9)) : 1;
+      shellMaterial.opacity = (0.13 + 0.05 * Math.sin(t * 3)) * warn;
+      shell.current.scale.setScalar(1 + 0.03 * Math.sin(t * 3));
+    }
   });
 
   return (
@@ -90,6 +116,10 @@ export function Player() {
           with a readable front makes it redundant and it comes out in M6. */}
       <mesh material={material} position={[0, 0.2, 0.7]}>
         <boxGeometry args={[0.26, 0.16, 0.5]} />
+      </mesh>
+
+      <mesh ref={shell} material={shellMaterial} position-y={0.9} visible={false}>
+        <sphereGeometry args={[1.35, 20, 14]} />
       </mesh>
     </group>
   );

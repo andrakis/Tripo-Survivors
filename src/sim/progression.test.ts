@@ -1,8 +1,8 @@
-// Progression tests: the XP curve, and that the unlock table in DESIGN §6.3 is the one that runs.
+// Progression tests: the XP curve, the automatic weapon unlocks, and the upgrade the player picks.
 //
 // The bar here is the same as everywhere else in sim/ — guard a specific way this could break, do
-// not re-state the tuning table. So the level-by-level test asserts the *effect* of each unlock on
-// the live fields the weapons actually read, not that a table has twelve rows.
+// not re-state the tuning table. So the tests assert the *effect* of an upgrade on the live fields
+// the weapons actually read, and the pause/choice protocol that a level-up now runs.
 //
 // Same rules as the rest of sim/: no three, no WebGL, no mocks (ARCHITECTURE §2.1).
 
@@ -13,10 +13,13 @@ import { makeGrid, type Grid } from './grid';
 import { createOrbs, spawnOrb, stepOrbs, type Orbs } from './orbs';
 import { createPlayer, type Player } from './player';
 import {
+  AUTO_UNLOCKS,
+  chooseUpgrade,
   createProgression,
+  isPaused,
+  rollOffer,
   stepProgression,
-  unlockFor,
-  UNLOCKS,
+  UPGRADES,
   xpToNext,
   type Progression,
 } from './progression';
@@ -36,7 +39,7 @@ interface World {
 
 /** Everything game.ts wires, wired the same way. */
 function world(): World {
-  // The field names are the ones sim/progression.ts Loadout expects — the unlock table writes
+  // The field names are the ones sim/progression.ts Loadout expects — the upgrade table writes
   // straight into these objects, exactly as it does into the game singleton.
   return {
     player: createPlayer(),
@@ -53,8 +56,15 @@ function world(): World {
  * Tick steps 5 and 7–10, at a fixed dt. The swarm is deliberately NOT stepped: every test below
  * places enemies where it wants them and asks what the weapons and the XP chain do about it, and a
  * moving crowd would make the answer depend on separation and flow.
+ *
+ * `pick` is what the harness does with an offer, standing in for the player. Passing -1 leaves the
+ * choice open, which is how the pause itself gets tested.
  */
-function tick(w: World, dt = DT): void {
+function tick(w: World, dt = DT, pick = 0): void {
+  if (isPaused(w.prog)) {
+    if (pick >= 0) chooseUpgrade(w.prog, w, pick, w.time);
+    return; // the run is frozen while a choice is outstanding — game.ts short-circuits identically
+  }
   w.time += dt;
   buildSwarmGrid(w.swarm, w.grid);
   stepCombat(w.combat, w.player, w.swarm, w.grid, dt);
@@ -69,6 +79,31 @@ function tick(w: World, dt = DT): void {
 function grant(w: World, amount: number): number {
   stepProgression(w.prog, w, amount, w.time, 0);
   return w.prog.level;
+}
+
+/**
+ * Walk a world up to `level` through the ordinary XP path, taking the upgrade whose id is `prefer`
+ * whenever it is on offer and card 0 otherwise.
+ *
+ * It returns a TALLY of what was actually taken, because `prefer` is a preference and not a
+ * guarantee: an offer is three cards out of seven, so a run that wants Damage every time does not
+ * get it. A test that assumed otherwise would be asserting the shuffle, not the stacking.
+ */
+function climb(w: World, level: number, prefer?: string): Record<string, number> {
+  const taken: Record<string, number> = {};
+  let guard = 0;
+  while (w.prog.level < level && guard++ < 400) {
+    if (isPaused(w.prog)) {
+      const offer = w.prog.offer!;
+      const i = prefer ? offer.findIndex((u) => u.id === prefer) : 0;
+      const pick = i >= 0 ? i : 0;
+      taken[offer[pick].id] = (taken[offer[pick].id] ?? 0) + 1;
+      chooseUpgrade(w.prog, w, pick, w.time);
+    } else {
+      grant(w, w.prog.need);
+    }
+  }
+  return taken;
 }
 
 /** Total XP needed to REACH `level` from level 1. */
@@ -107,50 +142,139 @@ describe('the XP curve', () => {
     expect(w.prog.need).toBe(xpToNext(2));
     expect(w.prog.totalXp).toBe(7);
   });
+});
 
-  it('grants EVERY level a single big pickup crosses, not just the last one', () => {
-    // An elite orb is worth 40 XP — more than the first three levels put together. If the level-up
-    // were an `if` rather than a `while`, a player who walked into a saved pile would jump to the
-    // right level with the intervening unlocks silently skipped, and the Lance would never arrive.
+describe('the level-up protocol', () => {
+  it('pauses on a level that offers a choice, and resumes when one is taken', () => {
     const w = world();
-    // 40 XP buys level 2 (5) and level 3 (14) and leaves 21 against level 4's 25.
-    expect(grant(w, 40)).toBe(3);
-    expect(w.prog.xp).toBe(21);
-    expect(w.combat.auraR).toBe(TUNING.AURA_R + 1.0); // level 2 applied...
-    expect(w.combat.boltEnabled).toBe(true); //          ...and level 3, not only the last one
+    expect(isPaused(w.prog)).toBe(false);
+
+    grant(w, xpToNext(1)); // level 2: a choice level
+    expect(w.prog.level).toBe(2);
+    expect(isPaused(w.prog)).toBe(true);
+    expect(w.prog.offer!.length).toBeGreaterThan(1);
+
+    expect(chooseUpgrade(w.prog, w, 0, 0)).toBe(true);
+    expect(isPaused(w.prog)).toBe(false);
+    expect(w.prog.lastUnlock).toBeTruthy();
+  });
+
+  it('grants a weapon level automatically, with no pause at all', () => {
+    // The odd levels 3-11 are the run's power spine (DESIGN §6.3). A player who could decline the
+    // Lance would have a run with no Lance, so these are news rather than a decision.
+    const w = world();
+    climb(w, 3);
+    expect(w.prog.level).toBe(3);
+    expect(isPaused(w.prog)).toBe(false);
+    expect(w.combat.boltEnabled).toBe(true);
+    expect(w.prog.lastUnlock).toBe(AUTO_UNLOCKS[3].label);
+  });
+
+  it('does not skip a level banked behind an outstanding choice', () => {
+    // 100 XP at level 1 crosses levels 2, 3 and 4 at once. The choice at level 2 must not swallow
+    // the Lance at 3 or the second choice at 4 — the loop stops at the offer and picks up after it.
+    const w = world();
+    grant(w, 100);
+    expect(w.prog.level).toBe(2);
+    expect(isPaused(w.prog)).toBe(true);
+
+    chooseUpgrade(w.prog, w, 0, 0);
+    // Level 3 is automatic, so resolving the choice runs straight through it and stops at 4's offer.
+    expect(w.prog.level).toBe(4);
+    expect(w.combat.boltEnabled).toBe(true);
+    expect(isPaused(w.prog)).toBe(true);
+
+    chooseUpgrade(w.prog, w, 0, 0);
+    expect(isPaused(w.prog)).toBe(false);
+    expect(w.prog.totalXp).toBe(100);
+  });
+
+  it('ignores an out-of-range pick rather than quietly applying the first card', () => {
+    // This is wired straight to a keypress. Treating `4` as card 1 would spend a level-up on
+    // something the player did not read.
+    const w = world();
+    grant(w, xpToNext(1));
+    expect(chooseUpgrade(w.prog, w, 9, 0)).toBe(false);
+    expect(chooseUpgrade(w.prog, w, -1, 0)).toBe(false);
+    expect(isPaused(w.prog)).toBe(true);
+  });
+
+  it('offers distinct upgrades, and nothing that would be a dead card', () => {
+    const w = world();
+    for (let roll = 0; roll < 200; roll++) {
+      const offer = rollOffer(w.prog, w);
+      expect(offer.length).toBe(TUNING.OFFER_COUNT);
+      expect(new Set(offer.map((u) => u.id)).size).toBe(offer.length);
+      // Fire rate before the Lance exists would be an upgrade to a weapon that is not firing.
+      expect(offer.some((u) => u.id === 'rate')).toBe(false);
+    }
+
+    w.combat.boltEnabled = true;
+    let sawRate = false;
+    for (let roll = 0; roll < 200; roll++) {
+      if (rollOffer(w.prog, w).some((u) => u.id === 'rate')) sawRate = true;
+    }
+    expect(sawRate).toBe(true);
+  });
+
+  it('reaches every upgrade in the pool across enough rolls', () => {
+    // A shuffle that quietly favoured the head of the pool would make the last two entries almost
+    // unreachable, which is invisible in play and fatal to the point of having a choice.
+    const w = world();
+    w.combat.boltEnabled = true;
+    const seen = new Set<string>();
+    for (let roll = 0; roll < 500; roll++) {
+      for (const u of rollOffer(w.prog, w)) seen.add(u.id);
+    }
+    expect(seen.size).toBe(UPGRADES.length);
   });
 });
 
-describe('the unlock table', () => {
-  /** Walk a fresh world up to `level` one level at a time, through the ordinary XP path. */
-  function at(level: number): World {
+describe('what the upgrades do', () => {
+  it('applies the picked upgrade to the live field its weapon reads', () => {
+    const cases: [string, (w: World) => unknown, unknown][] = [
+      ['aura', (w) => w.combat.auraR, TUNING.AURA_R + 1.0],
+      ['damage', (w) => w.combat.damageMul, 1.25],
+      ['speed', (w) => w.player.speedMul, 1.1],
+      ['magnet', (w) => w.orbs.magnetR, TUNING.PICKUP_R * 1.5],
+      ['hp', (w) => w.player.maxHp, TUNING.PLAYER_HP + 25],
+      ['dash', (w) => w.player.dashCdMax, TUNING.DASH_COOLDOWN * 0.8],
+    ];
+
+    for (const [id, read, expected] of cases) {
+      const w = world();
+      UPGRADES.find((u) => u.id === id)!.apply(w);
+      expect(read(w), id).toBeCloseTo(expected as number, 10);
+    }
+  });
+
+  it('stacks a repeated pick rather than capping it', () => {
+    // Levels 2, 4, 6, 8, 10 and 12 are choices; a run that takes Damage whenever it is offered gets
+    // it some of the time, and the multiplier has to be exactly 1.25 to that power.
     const w = world();
-    while (w.prog.level < level) grant(w, w.prog.need);
-    expect(w.prog.level).toBe(level);
-    return w;
-  }
+    const taken = climb(w, 13, 'damage');
+    expect(taken.damage).toBeGreaterThan(0);
+    expect(w.combat.damageMul).toBeCloseTo(1.25 ** taken.damage, 8);
+    // No cap, no clamp: the same number reached by applying it directly that many times.
+    const direct = world();
+    for (let i = 0; i < taken.damage; i++) UPGRADES.find((u) => u.id === 'damage')!.apply(direct);
+    expect(direct.combat.damageMul).toBeCloseTo(w.combat.damageMul, 8);
+  });
 
-  it('applies DESIGN §6.3 in order, one distinct effect per level', () => {
-    expect(at(2).combat.auraR).toBe(TUNING.AURA_R + 1.0);
-    expect(at(3).combat.boltEnabled).toBe(true);
-    expect(at(4).combat.damageMul).toBeCloseTo(1.25, 10);
-    expect(at(5).combat.boltPierce).toBe(TUNING.BOLT_PIERCE + 2);
-    expect(at(6).combat.boltInterval).toBeCloseTo(TUNING.BOLT_INTERVAL / 1.2, 10);
-    expect(at(7).combat.boltCount).toBe(2);
-    expect(at(8).player.speedMul).toBeCloseTo(1.1, 10);
-    expect(at(9).combat.orbiters).toBe(1);
-    expect(at(10).orbs.magnetR).toBeCloseTo(TUNING.PICKUP_R * 1.5, 10);
-    expect(at(11).combat.knockback).toBe(TUNING.KNOCKBACK);
-
-    const twelve = at(12);
-    expect(twelve.player.maxHp).toBe(TUNING.PLAYER_HP + 25);
-    expect(twelve.player.hp).toBe(twelve.player.maxHp); // "and heal to full"
+  it('grants the weapon spine on its fixed schedule whatever the player picks', () => {
+    const w = world();
+    const taken = climb(w, 11, 'hp');
+    expect(w.combat.boltEnabled).toBe(true);
+    expect(w.combat.boltPierce).toBe(TUNING.BOLT_PIERCE + 2);
+    expect(w.combat.boltCount).toBe(2);
+    expect(w.combat.orbiters).toBe(1);
+    expect(w.combat.knockback).toBe(TUNING.KNOCKBACK);
+    // ...and "heal to full" left the player at whatever maximum their picks built.
+    expect(w.player.maxHp).toBe(TUNING.PLAYER_HP + 25 * (taken.hp ?? 0));
+    if (taken.hp) expect(w.player.hp).toBe(w.player.maxHp);
   });
 
   it('starts a run with NOTHING unlocked — the Lance included', () => {
-    // The M3 default was `boltEnabled: true`, because a combat milestone with one weapon is not a
-    // combat milestone. Now that there is a level 3 to unlock it, shipping it on would make the
-    // single most legible unlock in the table invisible.
     const c = createCombat();
     expect(c.boltEnabled).toBe(false);
     expect(c.boltCount).toBe(1);
@@ -158,44 +282,48 @@ describe('the unlock table', () => {
     expect(c.orbiters).toBe(0);
     expect(c.knockback).toBe(0);
     expect(createPlayer().speedMul).toBe(1);
+    expect(createPlayer().dashCdMax).toBe(TUNING.DASH_COOLDOWN);
     expect(createOrbs().magnetR).toBe(TUNING.PICKUP_R);
   });
 
   it('leaves TUNING alone — a run modifies live fields, never the balance table', () => {
-    // The failure this guards is subtle and permanent: an unlock that wrote into TUNING would
+    // The failure this guards is subtle and permanent: an upgrade that wrote into TUNING would
     // survive `resetGame`, and the second run of a session would silently start at the first run's
     // final stats. Every scale factor is checked against the number config.ts still holds.
-    const w = at(12);
+    const w = world();
+    climb(w, 12);
     expect(TUNING.AURA_R).toBe(3.0);
     expect(TUNING.BOLT_INTERVAL).toBe(0.55);
     expect(TUNING.BOLT_PIERCE).toBe(1);
     expect(TUNING.PICKUP_R).toBe(3.0);
     expect(TUNING.PLAYER_HP).toBe(100);
-    expect(w.combat.auraR).not.toBe(TUNING.AURA_R); // and the run really did diverge from it
+    expect(TUNING.DASH_COOLDOWN).toBe(2.2);
+    expect(w.prog.level).toBe(12);
   });
 
-  it('keeps paying out past the end of the table, without granting a second Orbiter', () => {
-    // Levels 13+ cycle damage / fire rate / aura radius / move speed at +10%. The NEW mechanics are
-    // excluded on purpose: an Orbiter every four levels eventually out-damages both weapons and the
-    // endgame becomes a passive.
-    const w = at(12 + 8); // levels 13..20: exactly two full turns of the four-step cycle
+  it('keeps offering real cards long past the end of the weapon table', () => {
+    // Level 30 is even, so reaching it raises an offer — and that offer must still be a full hand of
+    // distinct upgrades. The pool is entirely repeatable for exactly this reason: there is no
+    // "taken" state to exhaust, so a long run never runs out of cards to read.
+    const w = world();
+    climb(w, 30);
+    expect(w.prog.level).toBe(30);
+    expect(isPaused(w.prog)).toBe(true);
+    expect(w.prog.offer!.length).toBe(TUNING.OFFER_COUNT);
+    expect(new Set(w.prog.offer!.map((u) => u.id)).size).toBe(TUNING.OFFER_COUNT);
+    // The NEW mechanics are granted once each, not on a cycle — the pool must never hand one out.
     expect(w.combat.orbiters).toBe(1);
     expect(w.combat.boltCount).toBe(2);
-    // Two turns of the cycle is +10% twice on each of the four stats.
-    expect(w.combat.damageMul).toBeCloseTo(1.25 * TUNING.LATE_STEP ** 2, 10);
-    expect(w.player.speedMul).toBeCloseTo(1.1 * TUNING.LATE_STEP ** 2, 10);
-    // ...and a label exists for every level, so the toast is never blank.
-    for (let l = 2; l < 40; l++) expect(unlockFor(l).label.length).toBeGreaterThan(0);
-    expect(unlockFor(2)).toBe(UNLOCKS[0]);
   });
 });
 
 describe('a scripted run', () => {
   it('turns a fixed kill sequence into a deterministic level and unlock set', () => {
-    // The M4 acceptance test. 30 grunts standing inside the aura, nothing else: no spawn director,
-    // no swarm movement, no randomness anywhere in the chain. Two pulses kill each (10 hp, 6
-    // damage), each drops a 1 XP orb at 2.0 units — inside the magnet radius — so the whole 30 XP is
-    // banked, and 30 XP is exactly levels 2 and 3 with 11 left over toward level 4 (5 + 14 = 19).
+    // The acceptance test. 30 grunts standing inside the aura, nothing else: no spawn director, no
+    // swarm movement, no randomness in the chain except which cards are offered — and the harness
+    // always takes card 0, so even that is pinned. Two pulses kill each (10 hp, 6 damage), each
+    // drops a 1 XP orb at 2.0 units — inside the magnet radius — so the whole 30 XP is banked, and
+    // 30 XP is exactly levels 2 and 3 with 11 left over toward level 4 (5 + 14 = 19).
     const w = world();
     for (let i = 0; i < 30; i++) {
       const a = (i / 30) * Math.PI * 2;
@@ -211,12 +339,29 @@ describe('a scripted run', () => {
     expect(w.prog.level).toBe(3);
     expect(w.prog.xp).toBe(30 - 5 - 14);
     expect(w.prog.need).toBe(xpToNext(3));
-    expect(w.prog.lastUnlock).toBe('NEW — Lance');
+    expect(w.prog.lastUnlock).toBe(AUTO_UNLOCKS[3].label);
 
-    // The unlock set that level implies, read off the fields the weapons use.
-    expect(w.combat.auraR).toBe(TUNING.AURA_R + 1.0);
+    // Level 2 was a choice and the harness took it; level 3 granted the Lance.
     expect(w.combat.boltEnabled).toBe(true);
-    expect(w.combat.damageMul).toBe(1); // level 4 not reached
+    expect(isPaused(w.prog)).toBe(false);
+  });
+
+  it('stops the world at a choice and does not restart it until one is taken', () => {
+    const w = world();
+    for (let i = 0; i < 30; i++) {
+      const a = (i / 30) * Math.PI * 2;
+      spawnEnemy(w.swarm, Math.cos(a) * 2.0, Math.sin(a) * 2.0, 0);
+    }
+    // pick = -1: never answer the card.
+    for (let t = 0; t < 3; t += DT) tick(w, DT, -1);
+
+    expect(isPaused(w.prog)).toBe(true);
+    expect(w.prog.level).toBe(2);
+    const frozenTime = w.time;
+    const survivors = w.swarm.n;
+    for (let t = 0; t < 1; t += DT) tick(w, DT, -1);
+    expect(w.time).toBe(frozenTime);
+    expect(w.swarm.n).toBe(survivors);
   });
 
   it('pays nothing for a kill whose orb is never collected', () => {
@@ -226,7 +371,7 @@ describe('a scripted run', () => {
     const w = world();
     const far = spawnEnemy(w.swarm, 40, 40, 0);
     w.swarm.data[far * ENEMY_STRIDE + E_HP] = 1;
-    w.combat.auraR = 100; // reach it without moving the player, so the ORB's distance is what is on trial
+    w.combat.auraR = 100; // reach it without moving the player, so the ORB's distance is on trial
 
     for (let t = 0; t < 2; t += DT) tick(w);
 
@@ -238,7 +383,7 @@ describe('a scripted run', () => {
 
   it('reaches level 8 well inside the XP a normal run produces by 2:30', () => {
     // DESIGN §8 targets level 8 by ~2:30. The spawn director's rate is SPAWN_BASE + t/SPAWN_RAMP, so
-    // by 150 s it has released the integral below — and level 8 costs 424. This does NOT claim the
+    // by 150 s it has released the integral below — and level 8 costs 287. This does NOT claim the
     // balance is right (that is M5's pass against a real run); it guards the much cruder property
     // that the curve and the spawn ramp are within an order of magnitude of each other, which is the
     // kind of thing a stray edit to XP_EXP breaks silently.

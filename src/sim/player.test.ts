@@ -3,7 +3,7 @@
 
 import { describe, expect, it } from 'vitest';
 import { TUNING, HALF_X } from '../config';
-import { createPlayer, damagePlayer, isAlive, stepPlayer } from './player';
+import { canDash, createPlayer, damagePlayer, isAlive, stepPlayer } from './player';
 import { OBSTACLES, overlapsObstacle, resolveObstacles } from './world';
 import { attachKeyboard, resetInput, sampleInput, setTouchVector } from '../input';
 
@@ -91,7 +91,7 @@ describe('player bounds and obstacles', () => {
   it('resolves on the axis of least penetration, preserving motion along a wall', () => {
     const wall = OBSTACLES[3]; // East Wall: hx 2.0, hz 20.0 — long on Z
     // Pressed into its west face, well away from the ends.
-    const out = { x: 0, z: 0 };
+    const out = { x: 0, z: 0, dash: false };
     resolveObstacles(out, wall.x - wall.hx + 0.2, wall.z, 0.6);
     expect(out.x).toBeCloseTo(wall.x - wall.hx - 0.6, 6);
     expect(out.z).toBe(wall.z); // the tangential component is untouched — no sticking
@@ -148,6 +148,13 @@ function fakeWindow() {
       e.code = code;
       target.dispatchEvent(e);
     },
+    /** A key-repeat keydown — what the OS delivers while a key is held down. */
+    repeat: (code: string) => {
+      const e = new Event('keydown') as Event & { code: string; repeat: boolean };
+      e.code = code;
+      e.repeat = true;
+      target.dispatchEvent(e);
+    },
     release: (code: string) => {
       const e = new Event('keyup') as Event & { code: string };
       e.code = code;
@@ -157,12 +164,120 @@ function fakeWindow() {
   };
 }
 
+describe('the dash', () => {
+  /** Hold `(ix, iz)` for `seconds`, pressing dash on the first tick only — dash is an edge. */
+  function dashDrive(ix: number, iz: number, seconds: number) {
+    const p = createPlayer();
+    p.x = OPEN_LANE.x + 40; // open ground, well clear of the world edge in every direction
+    p.z = OPEN_LANE.z;
+    let first = true;
+    for (let t = 0; t < seconds; t += DT) {
+      stepPlayer(p, ix, iz, DT, first);
+      first = false;
+    }
+    return p;
+  }
+
+  it('covers far more ground than walking, in the time it lasts', () => {
+    const walked = createPlayer();
+    walked.x = OPEN_LANE.x + 40;
+    walked.z = OPEN_LANE.z;
+    const start = walked.x;
+    for (let t = 0; t < TUNING.DASH_TIME; t += DT) stepPlayer(walked, 1, 0, DT);
+
+    const dashed = dashDrive(1, 0, TUNING.DASH_TIME);
+    expect(dashed.x - (OPEN_LANE.x + 40)).toBeGreaterThan((walked.x - start) * 2);
+  });
+
+  it('goes where the input points, and along facing from a standstill', () => {
+    const moving = dashDrive(0, -1, TUNING.DASH_TIME);
+    expect(moving.z).toBeLessThan(OPEN_LANE.z - 3);
+
+    // No input: the dash has to go where the character is pointing, which is the only direction the
+    // player can see. Facing +X here, so the dash must be +X.
+    const still = createPlayer();
+    still.x = OPEN_LANE.x + 40;
+    still.z = OPEN_LANE.z;
+    still.facing = Math.PI / 2;
+    for (let t = 0; t < TUNING.DASH_TIME; t += DT) stepPlayer(still, 0, 0, DT, t === 0);
+    expect(still.x).toBeGreaterThan(OPEN_LANE.x + 42);
+  });
+
+  it('grants i-frames that outlast the movement', () => {
+    // The dash is an escape. One that drops you into contact damage on the frame it ends is a trap,
+    // so DASH_IFRAMES is deliberately longer than DASH_TIME.
+    const p = dashDrive(1, 0, TUNING.DASH_TIME);
+    expect(p.dashTimer).toBe(0);
+    expect(p.iframe).toBeGreaterThan(0);
+    expect(damagePlayer(p, 10)).toBe(false);
+  });
+
+  it('is on a cooldown a held button cannot beat', () => {
+    // Dash on EVERY tick for two seconds. The cooldown is 2.2 s, so exactly one dash may happen.
+    const p = createPlayer();
+    p.x = OPEN_LANE.x + 40;
+    p.z = OPEN_LANE.z;
+    const start = p.x;
+    let dashes = 0;
+    let wasDashing = false;
+    for (let t = 0; t < 2; t += DT) {
+      stepPlayer(p, 1, 0, DT, true);
+      if (p.dashTimer > 0 && !wasDashing) dashes++;
+      wasDashing = p.dashTimer > 0;
+    }
+    expect(dashes).toBe(1);
+    expect(canDash(p)).toBe(false);
+    // ...and it did not teleport across the arena: one dash plus two seconds of walking.
+    expect(p.x - start).toBeLessThan(TUNING.PLAYER_SPEED * 2 + TUNING.DASH_SPEED * TUNING.DASH_TIME + 1);
+  });
+
+  it('comes back after the cooldown, and a shorter cooldown comes back sooner', () => {
+    const p = createPlayer();
+    stepPlayer(p, 1, 0, DT, true);
+    expect(canDash(p)).toBe(false);
+    for (let t = 0; t < p.dashCdMax + DT; t += DT) stepPlayer(p, 0, 0, DT);
+    expect(canDash(p)).toBe(true);
+
+    // The upgrade path: dashCdMax is a live field (sim/progression.ts), so shortening it is the
+    // whole implementation of "Dash cooldown -20%".
+    const quick = createPlayer();
+    quick.dashCdMax *= 0.8;
+    stepPlayer(quick, 1, 0, DT, true);
+    expect(quick.dashCd).toBeCloseTo(TUNING.DASH_COOLDOWN * 0.8, 6);
+  });
+
+  it('is stopped by props and bounds like any other movement', () => {
+    // The dash writes velocity directly, bypassing the input lerp — so this is the check that it
+    // still goes through resolveObstacles and clampToWorld rather than around them.
+    const p = createPlayer();
+    p.x = HALF_X - TUNING.PLAYER_R - 0.5;
+    p.z = 0;
+    for (let t = 0; t < TUNING.DASH_TIME * 2; t += DT) stepPlayer(p, 1, 0, DT, t === 0);
+    expect(p.x).toBeLessThanOrEqual(HALF_X - TUNING.PLAYER_R + 1e-6);
+  });
+});
+
+describe('the Invincible boost', () => {
+  it('refuses damage outright, and stops when it runs out', () => {
+    const p = createPlayer();
+    p.invincible = 0.5;
+    expect(damagePlayer(p, 30)).toBe(false);
+    expect(p.hp).toBe(TUNING.PLAYER_HP);
+    // ...and unlike an i-frame, taking a swing at it does not start a new window.
+    expect(p.iframe).toBe(0);
+
+    for (let t = 0; t < 0.55; t += DT) stepPlayer(p, 0, 0, DT);
+    expect(p.invincible).toBe(0);
+    expect(damagePlayer(p, 30)).toBe(true);
+  });
+});
+
 describe('input', () => {
   it('normalises a diagonal so it is not 1.41x faster than a cardinal', () => {
     resetInput();
     const w = fakeWindow();
     const detach = attachKeyboard(w.target);
-    const out = { x: 0, z: 0 };
+    const out = { x: 0, z: 0, dash: false };
 
     w.press('KeyW');
     w.press('KeyD');
@@ -176,12 +291,12 @@ describe('input', () => {
     resetInput();
     const w = fakeWindow();
     const detach = attachKeyboard(w.target);
-    const out = { x: 0, z: 0 };
+    const out = { x: 0, z: 0, dash: false };
 
     w.press('KeyA');
     w.press('KeyD');
     sampleInput(out);
-    expect(out).toEqual({ x: 0, z: 0 });
+    expect(out).toEqual({ x: 0, z: 0, dash: false });
 
     detach();
   });
@@ -190,8 +305,8 @@ describe('input', () => {
     resetInput();
     const w = fakeWindow();
     const detach = attachKeyboard(w.target);
-    const wasd = { x: 0, z: 0 };
-    const arrows = { x: 0, z: 0 };
+    const wasd = { x: 0, z: 0, dash: false };
+    const arrows = { x: 0, z: 0, dash: false };
 
     w.press('KeyW');
     sampleInput(wasd);
@@ -208,29 +323,66 @@ describe('input', () => {
     resetInput();
     const w = fakeWindow();
     const detach = attachKeyboard(w.target);
-    const out = { x: 0, z: 0 };
+    const out = { x: 0, z: 0, dash: false };
 
     w.press('KeyW');
     w.blur();
     sampleInput(out);
-    expect(out).toEqual({ x: 0, z: 0 });
+    expect(out).toEqual({ x: 0, z: 0, dash: false });
 
     detach();
+  });
+
+  it('reports a dash on exactly ONE tick per press', () => {
+    // The producer consumes the press. A held key that re-fired every tick would spend the dash the
+    // instant its cooldown expired, making "hold space" strictly better than tapping it.
+    resetInput();
+    const w = fakeWindow();
+    const detach = attachKeyboard(w.target);
+    const out = { x: 0, z: 0, dash: false };
+
+    w.press('Space');
+    sampleInput(out);
+    expect(out.dash).toBe(true);
+    sampleInput(out);
+    expect(out.dash).toBe(false);
+
+    detach();
+    resetInput();
+  });
+
+  it('ignores OS key-repeat, and forgets a queued dash on blur', () => {
+    resetInput();
+    const w = fakeWindow();
+    const detach = attachKeyboard(w.target);
+    const out = { x: 0, z: 0, dash: false };
+
+    w.repeat('Space');
+    sampleInput(out);
+    expect(out.dash).toBe(false);
+
+    w.press('Space');
+    w.blur();
+    sampleInput(out);
+    expect(out.dash).toBe(false);
+
+    detach();
+    resetInput();
   });
 
   it('falls through to the thumbstick only while no key is held', () => {
     resetInput();
     const w = fakeWindow();
     const detach = attachKeyboard(w.target);
-    const out = { x: 0, z: 0 };
+    const out = { x: 0, z: 0, dash: false };
 
     setTouchVector(0.5, -0.5);
     sampleInput(out);
-    expect(out).toEqual({ x: 0.5, z: -0.5 });
+    expect(out).toEqual({ x: 0.5, z: -0.5, dash: false });
 
     w.press('KeyD');
     sampleInput(out);
-    expect(out).toEqual({ x: 1, z: 0 });
+    expect(out).toEqual({ x: 1, z: 0, dash: false });
 
     detach();
     resetInput();

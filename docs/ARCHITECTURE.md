@@ -46,15 +46,16 @@ src/
     swarm.ts             enemy SoA + step                       (ported from Breach)
     waves.ts             spawn director
     combat.ts            aura pulses, bolts, damage resolution, the deferred reap
-    orbs.ts              XP orbs, magnet, pickup
-    progression.ts       XP curve, level-ups, unlock table, stat modifiers
+    orbs.ts              XP orbs, magnet, the homing latch, merging
+    boosts.ts            boost pickups on the field + the timers for what is active
+    progression.ts       XP curve, weapon grants, the upgrade choice pool
   models/registry.ts   THE TUTORIAL SEAM — see MODEL-PIPELINE.md
   store.ts             zustand: human-rate UI state ONLY
   scene/               R3F components. Read state, write matrices. No game logic.
-    Scene · Ground · Obstacles · Swarm · Player · Projectiles · Orbs · Orbiter · AuraRing ·
-    CameraRig · FpsMeter
+    Scene · Ground · Obstacles · Swarm · Player · Projectiles · Orbs · Orbiter · Boosts ·
+    AuraRing · CameraRig · FpsMeter
     GameLoop             the ONE useFrame that runs game.step(), at priority -1 (§6)
-  ui/                  Hud · LevelUp · TouchControls · GameOver
+  ui/                  Hud · LevelUp · LevelUpChoice · BoostToast · TouchControls · GameOver
 ```
 
 ### 2.1 The `sim/` purity rule
@@ -334,14 +335,23 @@ Buffers are allocated once at their cap (`MAX_ENEMIES` 400, `MAX_BOLTS` 128,
 |---|---|---|
 | `enemies` | 8 | `x, z, vx, vz, hp, tier, flash, seed` |
 | `bolts` | 6 | `x, z, vx, vz, life, pierceLeft` |
-| `orbs` | 4 | `x, z, value, age` |
+| `orbs` | 5 | `x, z, value, age, homing` |
 | `deaths` | 4 | `x, z, tier, age` |
 | `drops` | 3 | `x, z, value` |
+| `boosts` | 4 | `x, z, kind, age` |
 
 `orbs` carries no velocity on purpose. The magnet's acceleration is **positional** —
 speed interpolated from the orb's own distance to the player — so the pull can never
-overshoot, orbit or oscillate the way an integrated spring does once level 10 grows
-the magnet radius by 50%, and the stride stays at the four fields above.
+overshoot, orbit or oscillate the way an integrated spring does once the Magnet upgrade
+grows the radius by 50%, and the stride stays at the five fields above.
+
+`homing` is a latch, set on entering the magnet radius and never cleared. A latched orb
+is additionally floored at `ORB_HOME_MUL ×` the player's *current* speed, because the
+positional curve alone reaches ORB_SPEED_MAX only at the player: with a few Move Speed
+picks the character outruns an orb at the rim of their own magnet, and an orb that
+visibly chases and then gives up reads as a broken pickup. The Magnet boost is
+implemented as "set the latch every orb already has", so there is exactly one way for an
+orb to travel and no second code path to disagree about overshoot.
 
 `drops` is a one-tick queue, not a population: the reap writes `{x, z, value}` for each
 body, step 8 turns them into orbs, and `combat.step` clears it at the top of the next
@@ -394,11 +404,18 @@ canvas blank.
  6. swarm.step(dt)          flow + separation + obstacles + integrate
  7. combat.step(dt)         aura pulse; bolts; orbiter; hit resolution; the reap
  8. drops -> orbs.spawn()   kills drop orbs at the death position
+8a. boosts.step(dt)         spawn clock, pickup, active timers -> live fields
+8b. orbs.merge(dt)          consolidate a big field of ignored orbs (2 Hz)
  9. orbs.step(dt)           magnet, pickup -> xp
-10. progression.step()      level-ups, apply unlocks
+10. progression.step()      level-ups; weapon grants, or an offer that pauses
 11. player.takeContact()    contact damage from the enemy grid, i-frame gate
 12. syncStore()             throttled to 10 Hz
 ```
+
+Boosts run *before* the orbs step because the Magnet boost latches the whole field, and
+the orbs it latched should start moving on the tick it was collected rather than the
+next one. Merging runs before the magnet for the same reason in reverse: an orb that is
+about to be picked up this tick must not be merged into a pile behind the player first.
 
 Ordering notes that matter: the grid is built **once** (step 5) and read by the
 swarm, the aura, the bolts, and contact damage — four consumers, one structure.
@@ -412,12 +429,26 @@ would be claiming the run is continuing. `resetGame` mutates the singleton **in 
 — every scene component holds a reference to it and reads it imperatively, so handing
 back a fresh object would leave the renderer pointed at the previous run.
 
-**Unlocks are the reason `resetGame` replaces sub-objects wholesale.** Every row of the
-DESIGN §6.3 table writes a live field on `combat`, `player` or `orbs` — never on
-`TUNING` — so a fresh `createCombat()` / `createPlayer()` / `createOrbs()` un-levels the
-character with nothing to unwind. A reset that had to remember twelve modifiers is a
-reset that will one day forget one, and the symptom would be the *second* run of a
-session silently starting with the first run's stats.
+**An outstanding upgrade choice short-circuits it too.** `prog.offer` non-null means the
+player owes a pick (DESIGN §6.3), and `game.step` returns as early as it does on death —
+so the frame behind the cards is the exact one the level landed on. Input is still
+*sampled* on that path, so a dash queued in the instant before the level-up is not
+swallowed by the pause. It is the only pause in the game.
+
+**Unlocks are the reason `resetGame` replaces sub-objects wholesale.** Every weapon grant
+and every upgrade in DESIGN §6.3 writes a live field on `combat`, `player` or `orbs` —
+never on `TUNING` — so a fresh `createCombat()` / `createPlayer()` / `createOrbs()` /
+`createBoosts()` un-levels the character with nothing to unwind. A reset that had to
+remember a dozen modifiers is a reset that will one day forget one, and the symptom
+would be the *second* run of a session silently starting with the first run's stats.
+
+Boost timers work the same way and for the same reason: they are pushed onto the live
+fields (`combat.boostMul`, `combat.boltCountMul`, `combat.lifesteal`,
+`player.invincible`) **every tick**, declaratively, rather than applied on pickup and
+undone on expiry. Expiry is then free, and there is no undo path to get wrong when two
+boosts overlap. Those fields are deliberately separate from the progression multipliers
+beside them — a boost expires, a permanent upgrade must not, so they can never share a
+slot.
 
 **Fixed vs variable timestep:** variable, with the 50 ms clamp. The sim has no
 stiff constraint solver and nothing here needs determinism across machines (no
@@ -483,6 +514,13 @@ Per-population notes:
   pulse shares an age, and a pickup swap-removes, so the slot an orb occupies changes
   under it. Drawn before the cast, so a hundred of them never hide the enemies standing
   on top of them ([DESIGN §12](DESIGN.md) rule 3).
+- **Boosts** — two instanced meshes (a floating body and a ground ring), tinted per
+  instance from the `BOOSTS` table, drawn **after** the crowd. The readability brief is
+  the opposite of the orbs': an orb has to disappear into a field of a hundred others,
+  a boost has to be findable from across the arena because the player must *decide* to
+  go and get one. An orb hidden behind an enemy costs one XP; a boost hidden behind one
+  costs the fifteen seconds spent fetching it. The ground ring is what keeps it visible
+  when an 8-unit prop hides the body.
 - **Orbiter** — the level 9 unlock, instanced at a small fixed capacity with
   `count = combat.orbiters`, so it draws nothing until it is unlocked. The angle is
   recomputed from `combat.orbiterPhase` with the *same* expression the sim uses to

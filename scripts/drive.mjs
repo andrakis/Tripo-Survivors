@@ -106,6 +106,29 @@ const rearm = () =>
     window.__game.combat.auraTimer = 0;
   });
 
+/**
+ * Stop XP being banked, and hand it back.
+ *
+ * A check that measures HP cannot also be levelling up: the Max HP card grants +25 *and heals to
+ * full*, so a level-up landing inside a damage window turns "how much did that cost" into a number
+ * that went UP. It cost a run of this script exactly that way — `standing in a crowd costs HP`
+ * reported 100 -> 125.
+ *
+ * Zeroing the magnet radius rather than deleting orbs, because the director keeps producing kills
+ * for the whole window and each one drops a fresh orb. This is ordinary sim state — the same field
+ * the Magnet upgrade writes — not a test-only API.
+ */
+const freezeXp = () =>
+  page.evaluate(() => {
+    const g = window.__game;
+    g.orbs.n = 0;
+    g.orbs.magnetR = 0;
+  });
+const thawXp = () =>
+  page.evaluate(() => {
+    window.__game.orbs.magnetR = 3;
+  });
+
 /** Hand the player back to the game: full health, no invulnerability, empty field. */
 const mortal = () =>
   page.evaluate(() => {
@@ -133,6 +156,31 @@ await page.waitForFunction(() => !!document.querySelector('canvas') && !!window.
 });
 await page.waitForTimeout(1500); // let the camera finish its approach and the frame rate settle
 await page.click('canvas', { position: { x: 900, y: 400 } }); // focus, on the right half (no stick)
+
+/**
+ * Answer level-up offers automatically, from the PAGE side.
+ *
+ * From M4 a choice level freezes the run until a card is taken (DESIGN §6.3), and almost every check
+ * in this script kills things — so without this the first level-up would pause the game and every
+ * assertion after it would be measuring a stopped world. The interval calls `__choose`, which is the
+ * same call the card's own button makes, so nothing here is a test-only code path.
+ *
+ * Turned OFF around the checks that are ABOUT the choice, which take their cards by hand.
+ */
+const autoPick = () =>
+  page.evaluate(() => {
+    const w = window;
+    if (w.__autoPick) return;
+    w.__autoPick = setInterval(() => {
+      if (window.__game.prog.offer) window.__choose(0);
+    }, 40);
+  });
+const manualPick = () =>
+  page.evaluate(() => {
+    clearInterval(window.__autoPick);
+    window.__autoPick = null;
+  });
+await autoPick();
 
 // --- 1. every key direction reaches the sim, with the documented screen mapping -----------------
 await teleport(0, -80); // a prop-free lane, so nothing under test is a collision
@@ -566,8 +614,11 @@ check(
 );
 
 // --- 10. taking damage ------------------------------------------------------------------------------
+// XP frozen for the whole section: see `freezeXp`. Every check here is a difference between two HP
+// readings, and a Max HP card landing between them heals the player to full.
 await teleport(-100, 80);
 await mortal();
+await freezeXp();
 await ring(24, 0, 0.8); // a crowd standing ON the player
 const hurtStart = await combat();
 await page.waitForTimeout(2000);
@@ -584,6 +635,7 @@ const vignette = await page.evaluate(
   () => !!document.querySelector('div[style*="radial-gradient"]') || window.__game.lastHitAt >= 0,
 );
 check('a hit is recorded for the damage vignette', vignette);
+await thawXp();
 
 // --- 11. the HUD reads sim truth --------------------------------------------------------------------
 await teleport(-100, 80);
@@ -638,6 +690,7 @@ const prog = () =>
       bolt: g.combat.boltEnabled,
       boltCount: g.combat.boltCount,
       pierce: g.combat.boltPierce,
+      boltInterval: g.combat.boltInterval,
       auraR: g.combat.auraR,
       orbiters: g.combat.orbiters,
       knockback: g.combat.knockback,
@@ -645,6 +698,9 @@ const prog = () =>
       speedMul: g.player.speedMul,
       hp: g.player.hp,
       maxHp: g.player.maxHp,
+      dashCd: g.player.dashCd,
+      dashCdMax: g.player.dashCdMax,
+      offers: g.prog.offer ? g.prog.offer.length : 0,
       stepMs: g.stepMs,
       text: document.body.innerText,
     };
@@ -744,52 +800,137 @@ check(
   `lv ${levelled.level}, ${levelled.total} xp, ${levelled.orbs} orbs left`,
 );
 check(
-  'level 2 grew the aura and level 3 unlocked the Lance',
-  levelled.auraR >= 4.0 && levelled.bolt === true,
-  `auraR ${levelled.auraR}, lance ${levelled.bolt}`,
+  'level 3 unlocked the Lance, and the level-2 choice was taken',
+  levelled.bolt === true && levelled.text.includes('lv 3'),
+  `lance ${levelled.bolt}, auraR ${levelled.auraR} (level 2 is a choice — the harness took card 0)`,
 );
 
-// The level-up itself: forced through the ordinary XP path (`__grantXp` is the call orb pickup
-// makes) so the toast and the shake can be read without racing a fight.
+// --- the upgrade choice ------------------------------------------------------------------------
+// Auto-pick off: these checks ARE the card, so they take it by hand.
+await manualPick();
 await page.evaluate(() => {
   const g = window.__game;
   g.swarm.n = 0;
   g.orbs.n = 0;
-  window.__grantXp(g.prog.need);
+  // Land on an even level, which is a choice level. Odd levels 3-11 grant a weapon instead.
+  if (g.prog.level % 2 === 1) window.__grantXp(g.prog.need);
 });
 await page.waitForTimeout(120);
-const toasted = await prog();
+const beforeCard = await prog();
+await page.evaluate(() => window.__grantXp(window.__game.prog.need));
+await page.waitForTimeout(150);
+const carded = await prog();
 check(
-  'a level-up raises the toast, names the unlock, and shakes the camera',
-  toasted.text.includes(`LEVEL ${toasted.level}`) && toasted.shake > 0,
-  `"${toasted.text.replace(/\s+/g, ' ').match(/LEVEL \d+ [^\n]{0,24}/)?.[0] ?? '(no toast)'}", shake ${toasted.shake.toFixed(2)}`,
+  'a choice level raises the card instead of picking for the player',
+  carded.offers === 3 && carded.text.includes('CHOOSE ONE'),
+  `${carded.offers} cards at lv ${carded.level} (was ${beforeCard.level})`,
+);
+
+// The freeze. The card asks a question, and asking one while a crowd closes in makes it a reflex
+// test rather than a choice — so the sim stops dead behind it, exactly as it does on death.
+await page.evaluate(() => window.__spawn(40, 0, 8));
+const frozenBefore = await page.evaluate(() => ({
+  t: window.__game.time,
+  x: window.__game.swarm.data[0],
+  kills: window.__game.combat.kills,
+}));
+await page.waitForTimeout(700);
+const frozenAfter = await page.evaluate(() => ({
+  t: window.__game.time,
+  x: window.__game.swarm.data[0],
+  kills: window.__game.combat.kills,
+}));
+check(
+  'the run freezes behind the card',
+  frozenBefore.t === frozenAfter.t &&
+    frozenBefore.x === frozenAfter.x &&
+    frozenBefore.kills === frozenAfter.kills,
+  `t ${frozenAfter.t.toFixed(2)}, ${frozenAfter.kills} kills either side`,
+);
+await capture('level-up-choice');
+
+// Take a card with the keyboard. The player's hands are on WASD and the dash key all run; making
+// them find a mouse for the one decision in the game would be the wrong end to every level.
+const offered = await page.evaluate(() => window.__game.prog.offer.map((u) => u.id));
+await page.keyboard.press('Digit1');
+await page.waitForTimeout(200);
+const picked = await prog();
+check(
+  'pressing 1 takes the first card and restarts the run',
+  picked.offers === 0 && picked.text.includes(`LEVEL ${picked.level}`) && picked.shake > 0,
+  `took "${offered[0]}", ${picked.offers} cards left, shake ${picked.shake.toFixed(2)}`,
+);
+const resumed = await page.evaluate(() => window.__game.time);
+await page.waitForTimeout(400);
+check(
+  'the clock runs again once a card is taken',
+  (await page.evaluate(() => window.__game.time)) > resumed,
 );
 await capture('level-up');
 
-// The whole unlock table, in one jump: DESIGN §6.3 rows 4 through 12.
+await autoPick();
+await page.evaluate(() => {
+  window.__game.swarm.n = 0;
+});
+
+// The whole unlock spine plus a run's worth of picks, in one jump, on a FRESH run.
+//
+// Fresh because the check below counts the picks back out of the stats, and that arithmetic is only
+// meaningful if every level from 1 to 12 was crossed inside the window being measured — the checks
+// above have already spent several of them.
+await page.evaluate(() => window.__reset());
+await page.waitForTimeout(250);
 await page.evaluate(() => {
   const g = window.__game;
   let guard = 0;
-  while (g.prog.level < 12 && guard++ < 40) window.__grantXp(g.prog.need);
+  // Interleaved rather than granted-then-resolved: an offer BLOCKS the next level, which is the
+  // property that stops a big orb pickup silently skipping the Lance.
+  while (g.prog.level < 12 && guard++ < 200) {
+    if (g.prog.offer) window.__choose(0);
+    else window.__grantXp(g.prog.need);
+  }
+  // Reaching 12 raises its own offer. Resolve it here rather than leaving it for the auto-picker's
+  // interval, so the count below is exactly six choices and not a race with a 40 ms timer.
+  if (g.prog.offer) window.__choose(0);
 });
 await page.waitForTimeout(150);
 const maxed = await prog();
+// The weapon spine is the DETERMINISTIC half: levels 3, 5, 7, 9 and 11 grant these whatever the
+// player picks, which is the whole reason they are not in the choice pool (DESIGN §6.3).
 check(
-  'the full unlock table lands on the live fields the weapons read',
+  'the weapon spine arrives on schedule whatever cards were taken',
   maxed.level === 12 &&
+    maxed.bolt === true &&
     maxed.boltCount === 2 &&
     maxed.pierce === 3 &&
     maxed.orbiters === 1 &&
-    maxed.knockback > 0 &&
-    maxed.damageMul > 1.2 &&
-    maxed.speedMul > 1.05 &&
-    maxed.magnetR > 4,
-  `lv12: ${maxed.boltCount} bolts, pierce ${maxed.pierce}, ${maxed.orbiters} orbiter, ` +
-    `dmg ×${maxed.damageMul.toFixed(2)}, speed ×${maxed.speedMul.toFixed(2)}, magnet ${maxed.magnetR.toFixed(1)} u`,
+    maxed.knockback > 0,
+  `lv12: ${maxed.boltCount} bolts, pierce ${maxed.pierce}, ${maxed.orbiters} orbiter, knock ${maxed.knockback}`,
+);
+// ...and the chosen half is accounted for EXACTLY. Every upgrade in the pool leaves a signature on
+// its live field, so the six choice levels (2, 4, 6, 8, 10, 12) can be counted back out of the
+// stats. WHICH cards the harness took is up to the shuffle; that six picks produced six applications
+// is not — and this is what catches a pick being dropped, or applied twice.
+// One term per entry in the pool — miss one and this reads as a lost pick, which is exactly how the
+// Fire rate card was found to be missing from an earlier version of this count.
+const picks =
+  Math.round(Math.log(maxed.damageMul) / Math.log(1.25)) +
+  Math.round(Math.log(maxed.speedMul) / Math.log(1.1)) +
+  Math.round(Math.log(maxed.magnetR / 3) / Math.log(1.5)) +
+  Math.round(Math.log(0.55 / maxed.boltInterval) / Math.log(1.2)) +
+  Math.round(maxed.auraR - 3) +
+  Math.round((maxed.maxHp - 100) / 25) +
+  Math.round(Math.log(2.2 / maxed.dashCdMax) / Math.log(1 / 0.8));
+check(
+  'every choice level applied exactly one upgrade, no more and no fewer',
+  picks === 6,
+  `${picks} picks across 6 choice levels — dmg ×${maxed.damageMul.toFixed(2)}, ` +
+    `speed ×${maxed.speedMul.toFixed(2)}, magnet ${maxed.magnetR.toFixed(1)} u, aura ${maxed.auraR.toFixed(1)} u, ` +
+    `rate ${maxed.boltInterval.toFixed(3)} s, ${maxed.maxHp} hp, dash ${maxed.dashCdMax.toFixed(2)} s`,
 );
 check(
-  'level 12 raises max HP and heals to full',
-  maxed.maxHp === 125 && maxed.hp === maxed.maxHp,
+  'a Max HP pick heals to full rather than leaving a gap at the top of the bar',
+  maxed.maxHp === 100 || maxed.hp === maxed.maxHp,
   `${maxed.hp}/${maxed.maxHp} hp`,
 );
 
@@ -846,12 +987,326 @@ const orbFps = await page.evaluate(() => {
 });
 check('holds 60 fps with a full orb field', orbFps !== null && orbFps >= 55, `${orbFps} fps`);
 
-// Twelve levels of unlock modifiers, undone by replacing three objects. This is the check that
+// --- 12b. the dash ------------------------------------------------------------------------------
+await teleport(-100, 80);
+await page.evaluate(() => {
+  const g = window.__game;
+  g.swarm.n = 0;
+  g.orbs.n = 0;
+  g.player.dashCd = 0;
+  g.player.facing = Math.PI / 2; // +X, so a standing dash has a direction to go
+});
+await page.waitForTimeout(200);
+{
+  // No movement key is held for this, so ANY distance covered is the dash and nothing else.
+  const before = await player();
+  await page.keyboard.press('Space');
+  await page.waitForTimeout(450);
+  const after = await player();
+  const dist = Math.hypot(after.x - before.x, after.z - before.z);
+  check(
+    'Space dashes, and covers ground walking could not in the time',
+    dist > 5 && after.x > before.x + 5,
+    `${dist.toFixed(2)} u in 0.45 s, from a standstill`,
+  );
+}
+const dashed = await prog();
+check(
+  'the dash goes on cooldown and the HUD says so',
+  dashed.dashCd > 0 && dashed.text.includes('DASH'),
+  `${dashed.dashCd.toFixed(2)} s of ${dashed.dashCdMax.toFixed(2)} left`,
+);
+{
+  // Held down for two seconds against a 2.2 s cooldown: exactly one dash may happen. A key-repeat
+  // that re-fired would spend the dash the instant it came back, making "hold Space" the correct
+  // way to play.
+  await page.evaluate(() => {
+    window.__game.player.dashCd = 0;
+  });
+  const before = await player();
+  await page.keyboard.down('Space');
+  await page.waitForTimeout(1500);
+  await page.keyboard.up('Space');
+  const after = await player();
+  const dist = Math.hypot(after.x - before.x, after.z - before.z);
+  check(
+    'holding the dash key does not machine-gun it',
+    dist < 12,
+    `${dist.toFixed(2)} u in 1.5 s (one dash is ~7)`,
+  );
+}
+{
+  await page.evaluate(() => {
+    const g = window.__game;
+    g.player.dashCd = 0;
+    g.player.iframe = 0;
+    g.player.hp = g.player.maxHp;
+  });
+  await page.keyboard.press('Space');
+  await page.waitForTimeout(60);
+  const p = await player();
+  check(
+    'the dash grants i-frames, so it is an escape rather than a fast way into a crowd',
+    p.iframe > 0,
+    `${p.iframe.toFixed(2)} s`,
+  );
+}
+
+// --- 12c. orbs that do not give up, and orbs that consolidate -------------------------------------
+await teleport(-100, 80);
+await page.evaluate(() => {
+  const g = window.__game;
+  g.swarm.n = 0;
+  g.orbs.n = 0;
+  g.player.speedMul = 1.6; // 11.2 u/s: faster than an orb at the rim of its own magnet
+  // One orb just inside the magnet radius, dead ahead of the player's escape route.
+  g.orbs.data[0] = g.player.x + 1.5;
+  g.orbs.data[1] = g.player.z;
+  g.orbs.data[2] = 5;
+  g.orbs.data[3] = 0;
+  g.orbs.data[4] = 0;
+  g.orbs.n = 1;
+});
+{
+  const before = await prog();
+  // Run flat out for a second and a half. The orb latched on the first tick and has to catch up.
+  await hold(['KeyA'], 1500);
+  const after = await prog();
+  check(
+    'an orb that has started moving keeps coming even when the player outruns it',
+    after.orbs === 0 && after.total === before.total + 5,
+    `${after.orbs} left, +${after.total - before.total} xp at ${(7 * 1.6).toFixed(1)} u/s`,
+  );
+}
+await page.evaluate(() => {
+  window.__game.player.speedMul = 1;
+});
+
+// Merging. A field far bigger than ORB_MERGE_AT, aged past ORB_MERGE_AGE, well away from the player
+// so nothing is collected while it consolidates.
+await teleport(-100, 80);
+await page.evaluate(() => {
+  const g = window.__game;
+  const o = g.orbs;
+  o.n = 0;
+  for (let i = 0; i < 400; i++) {
+    const b = i * 5;
+    o.data[b] = 40 + (i % 20) * 1.1;
+    o.data[b + 1] = 40 + ((i / 20) | 0) * 1.1;
+    o.data[b + 2] = 1;
+    o.data[b + 3] = 60; // long since ignored
+    o.data[b + 4] = 0;
+  }
+  o.n = 400;
+});
+await page.waitForTimeout(1500);
+const consolidated = await page.evaluate(() => {
+  const o = window.__game.orbs;
+  let sum = 0;
+  let biggest = 0;
+  for (let i = 0; i < o.n; i++) {
+    sum += o.data[i * 5 + 2];
+    biggest = Math.max(biggest, o.data[i * 5 + 2]);
+  }
+  return { n: o.n, sum, biggest };
+});
+check(
+  'a big field of ignored orbs consolidates, without losing an XP point',
+  consolidated.n < 400 && consolidated.sum === 400 && consolidated.biggest > 1,
+  `400 -> ${consolidated.n} orbs, ${consolidated.sum} xp intact, biggest worth ${consolidated.biggest}`,
+);
+await capture('orb-merge');
+
+// --- 12d. boosts ----------------------------------------------------------------------------------
+await teleport(-100, 80);
+await page.evaluate(() => {
+  const g = window.__game;
+  g.swarm.n = 0;
+  g.orbs.n = 0;
+  g.boosts.n = 0;
+  g.boosts.timers.fill(0);
+});
+
+/** Put a boost of `kind` on the ground `d` units from the player and walk onto it. */
+const grabBoost = async (kind, d = 2) => {
+  await page.evaluate(
+    ([k, dist]) => {
+      const g = window.__game;
+      const b = g.boosts;
+      b.n = 0;
+      b.data[0] = g.player.x + dist;
+      b.data[1] = g.player.z;
+      b.data[2] = k;
+      b.data[3] = 0;
+      b.n = 1;
+    },
+    [kind, d],
+  );
+  await page.waitForTimeout(120);
+  await page.evaluate(() => {
+    const g = window.__game;
+    g.player.x = g.boosts.data[0];
+    g.player.z = g.boosts.data[1];
+  });
+  await page.waitForTimeout(200);
+};
+
+// A known permanent multiplier first. Whether the auto-picker happened to take Damage on the way to
+// level 12 is a coin flip, and the property under test — that the boost and the upgrade live in
+// different fields — deserves a controlled experiment rather than a lucky run.
+await page.evaluate(() => {
+  window.__game.combat.damageMul = 1.25;
+});
+await grabBoost(2); // BK_QUAD
+const quad = await prog();
+check(
+  'walking over a boost collects it, announces it, and changes the arithmetic',
+  quad.text.includes('QUAD DAMAGE'),
+  `boostMul ${await page.evaluate(() => window.__game.combat.boostMul)}`,
+);
+const quadMul = await page.evaluate(() => ({
+  boost: window.__game.combat.boostMul,
+  perm: window.__game.combat.damageMul,
+  n: window.__game.boosts.n,
+}));
+check(
+  'Quad Damage multiplies outbound damage without touching the permanent upgrades',
+  quadMul.boost === 4 && quadMul.perm === 1.25 && quadMul.n === 0,
+  `boost ×${quadMul.boost}, permanent ×${quadMul.perm.toFixed(2)}`,
+);
+await capture('boost');
+
+await grabBoost(1); // BK_INVINCIBLE
+{
+  await mortal();
+  await page.evaluate(() => {
+    window.__game.player.iframe = 0; // the boost, not the i-frame window, is what is on trial
+  });
+  await ring(24, 2, 0.8); // brutes standing on the player: 18 contact damage each
+  const before = await page.evaluate(() => window.__game.player.hp);
+  await page.waitForTimeout(1500);
+  const after = await page.evaluate(() => ({
+    hp: window.__game.player.hp,
+    inv: window.__game.player.invincible,
+  }));
+  check(
+    'Invincible takes no damage from a crowd standing on the player',
+    after.hp === before && after.inv > 0,
+    `${before} -> ${after.hp} hp, ${after.inv.toFixed(1)} s left`,
+  );
+}
+
+await grabBoost(4); // BK_BLOODLUST
+{
+  await page.evaluate(() => {
+    const g = window.__game;
+    g.player.invincible = 0;
+    g.player.iframe = 600; // survive the setup; the heal is what is being measured
+    g.player.hp = 30;
+    g.swarm.n = 0;
+  });
+  await ring(30, 0, 2.2);
+  const before = await combat();
+  await page.waitForTimeout(2000);
+  const after = await combat();
+  // Bounded by the player's OWN maximum, which depends on how many Max HP cards the run took —
+  // hard-coding 125 would make this check a bet on the shuffle.
+  const maxHp = await page.evaluate(() => window.__game.player.maxHp);
+  check(
+    'Bloodlust heals a point per kill',
+    after.hp > before.hp && after.hp <= maxHp,
+    `${before.hp} -> ${after.hp}/${maxHp} hp over ${after.kills - before.kills} kills`,
+  );
+}
+
+{
+  // Orbs scattered across the whole arena, out to 110 units — nearly forty times the magnet radius,
+  // so nothing here could be collected any other way. Centred on the player and inside the world so
+  // every one of them has a real distance to cover.
+  await teleport(0, 4);
+  await page.waitForTimeout(300);
+  // Weapons silenced for the whole window. It runs for thirteen seconds with the spawn director
+  // still working, and every enemy the aura kills in that time drops a FRESH orb the Magnet never
+  // touched — which would leave the field non-empty for a reason that has nothing to do with the
+  // boost. The same "the harness must not measure what it created" rule as the M2 pathing checks.
+  await disarm();
+  await page.evaluate(() => {
+    const g = window.__game;
+    g.combat.orbiters = 0; // the level 9 unlock also kills, and `disarm` predates it
+    const o = g.orbs;
+    o.n = 0;
+    for (let i = 0; i < 120; i++) {
+      const a = (i / 120) * Math.PI * 2;
+      const r = 20 + (i % 6) * 18; // 20 .. 110 units out
+      const b = i * 5;
+      o.data[b] = g.player.x + Math.cos(a) * r;
+      o.data[b + 1] = g.player.z + Math.sin(a) * r;
+      o.data[b + 2] = 1;
+      o.data[b + 3] = 0;
+      o.data[b + 4] = 0;
+    }
+    o.n = 120;
+    // The pickup, placed underfoot: collected on the next tick.
+    g.boosts.n = 0;
+    g.boosts.data[0] = g.player.x;
+    g.boosts.data[1] = g.player.z;
+    g.boosts.data[2] = 0; // BK_MAGNET
+    g.boosts.data[3] = 0;
+    g.boosts.n = 1;
+  });
+  const before = await prog();
+  await page.waitForTimeout(250);
+  const latched = await page.evaluate(() => {
+    const o = window.__game.orbs;
+    let homing = 0;
+    let far = 0;
+    for (let i = 0; i < o.n; i++) {
+      if (o.data[i * 5 + 4] === 1) homing++;
+      const d = Math.hypot(
+        o.data[i * 5] - window.__game.player.x,
+        o.data[i * 5 + 1] - window.__game.player.z,
+      );
+      far = Math.max(far, d);
+    }
+    return { n: o.n, homing, far };
+  });
+  check(
+    'Magnet starts every orb on the map moving, wherever it is',
+    latched.homing === latched.n && latched.n >= 120,
+    `${latched.homing}/${latched.n} homing, farthest ${latched.far.toFixed(0)} u out`,
+  );
+  // 110 units at the home-speed floor (PLAYER_SPEED × ORB_HOME_MUL = 11.9 u/s) is ~9.3 s.
+  await page.waitForTimeout(13000);
+  const after = await prog();
+  check(
+    'and they all arrive',
+    after.orbs === 0 && after.total >= before.total + 120,
+    `${after.orbs} left, +${after.total - before.total} xp`,
+  );
+  await rearm();
+}
+
+// Twelve levels of upgrade modifiers, undone by replacing the sim objects. This is the check that
 // `resetGame` does not have to remember each modifier one by one — the failure it guards is a second
 // run of a session silently starting with the first run's stats.
-await page.evaluate(() => window.__reset());
+await page.evaluate(() => {
+  const g = window.__game;
+  g.boosts.timers.fill(0);
+  g.player.invincible = 0;
+  window.__reset();
+});
 await page.waitForTimeout(300);
 const unlevelled = await prog();
+const clearedBoosts = await page.evaluate(() => {
+  const g = window.__game;
+  return {
+    active: Array.from(g.boosts.timers).filter((t) => t > 0).length,
+    field: g.boosts.n,
+    invincible: g.player.invincible,
+    boostMul: g.combat.boostMul,
+    lifesteal: g.combat.lifesteal,
+  };
+});
 check(
   'a restart un-levels the character completely',
   unlevelled.level === 1 &&
@@ -862,8 +1317,18 @@ check(
     unlevelled.damageMul === 1 &&
     unlevelled.speedMul === 1 &&
     unlevelled.magnetR === 3 &&
+    unlevelled.dashCdMax === 2.2 &&
     unlevelled.orbs === 0,
-  `lv ${unlevelled.level}, ${unlevelled.maxHp} max hp, lance ${unlevelled.bolt}, ${unlevelled.orbs} orbs`,
+  `lv ${unlevelled.level}, ${unlevelled.maxHp} max hp, lance ${unlevelled.bolt}, dash cd ${unlevelled.dashCdMax}`,
+);
+check(
+  'and clears every running boost with it',
+  clearedBoosts.active === 0 &&
+    clearedBoosts.field === 0 &&
+    clearedBoosts.invincible === 0 &&
+    clearedBoosts.boostMul === 1 &&
+    clearedBoosts.lifesteal === 0,
+  `${clearedBoosts.active} active, ${clearedBoosts.field} on the ground`,
 );
 
 // --- 13. the run ends, and starts again -------------------------------------------------------------

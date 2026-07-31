@@ -25,11 +25,18 @@ import {
   takeContact,
   type Combat,
 } from './sim/combat';
-import { createOrbs, spawnOrb, stepOrbs, type Orbs } from './sim/orbs';
-import { createProgression, stepProgression, type Progression } from './sim/progression';
+import { createOrbs, mergeOrbs, spawnOrb, stepOrbs, type Orbs } from './sim/orbs';
+import { createBoosts, stepBoosts, type Boosts } from './sim/boosts';
+import {
+  chooseUpgrade,
+  createProgression,
+  isPaused,
+  stepProgression,
+  type Progression,
+} from './sim/progression';
 import { overlapsObstacle } from './sim/world';
 import { sampleInput, type InputVector } from './input';
-import { useUi } from './store';
+import { useUi, type OfferCard } from './store';
 
 /** Longest tick the sim will take. A backgrounded tab hands back a multi-second dt on return, and
  *  without this clamp the first frame after that teleports everything through the geometry. */
@@ -52,7 +59,9 @@ export interface Game {
   combat: Combat;
   /** Uncollected XP on the ground. */
   orbs: Orbs;
-  /** Level, XP curve, and the unlock table's cursor through it. */
+  /** Boost pickups on the field, and the timers for what is currently active. */
+  boosts: Boosts;
+  /** Level, XP curve, the weapon unlock table, and any outstanding upgrade choice. */
   prog: Progression;
   /** Run time of the last hit taken, or -1. Drives the HUD vignette (DESIGN §12 rule 4). */
   lastHitAt: number;
@@ -67,13 +76,14 @@ export function createGame(): Game {
     time: 0,
     stepMs: 0,
     player: createPlayer(),
-    input: { x: 0, z: 0 },
+    input: { x: 0, z: 0, dash: false },
     flow: createFlow(),
     grid: makeGrid(),
     swarm: createSwarm(),
     waves: createWaves(),
     combat: createCombat(),
     orbs: createOrbs(),
+    boosts: createBoosts(),
     prog: createProgression(),
     lastHitAt: -1,
     runId: 0,
@@ -101,12 +111,15 @@ export function resetGame(g: Game): void {
   g.player = createPlayer();
   g.input.x = 0;
   g.input.z = 0;
+  g.input.dash = false;
   g.swarm = createSwarm();
   g.waves = createWaves();
-  // Replacing these three is also what undoes twelve levels of unlock modifiers — every one of them
-  // is a write to a live field on `combat`, `player` or `orbs`, and nothing has to be unwound.
+  // Replacing these is also what undoes a run's worth of upgrade modifiers — every one of them is a
+  // write to a live field on `combat`, `player` or `orbs`, and nothing has to be unwound. The same
+  // goes for the boost timers: a fresh Boosts has none running, so nothing can leak across a run.
   g.combat = createCombat();
   g.orbs = createOrbs();
+  g.boosts = createBoosts();
   g.prog = createProgression();
   g.lastHitAt = -1;
   g.runId = runId;
@@ -117,7 +130,21 @@ export function resetGame(g: Game): void {
   syncStore(g);
 }
 
+/** Rebuilt only when the offer identity changes, so the choice card does not remount every push. */
+const NO_OFFERS: readonly OfferCard[] = [];
+let offerCache: { from: unknown; cards: readonly OfferCard[] } = { from: null, cards: NO_OFFERS };
+
+function offerCards(g: Game): readonly OfferCard[] {
+  const offer = g.prog.offer;
+  if (!offer) return NO_OFFERS;
+  if (offerCache.from !== offer) {
+    offerCache = { from: offer, cards: offer.map((u) => ({ id: u.id, label: u.label, detail: u.detail })) };
+  }
+  return offerCache.cards;
+}
+
 function syncStore(g: Game): void {
+  const b = g.boosts;
   useUi.getState().sync({
     hp: g.player.hp,
     maxHp: g.player.maxHp,
@@ -129,6 +156,14 @@ function syncStore(g: Game): void {
     level: g.prog.level,
     lastLevelAt: g.prog.lastLevelAt,
     unlock: g.prog.lastUnlock,
+    offers: offerCards(g),
+    // A plain array copy rather than the live Float32Array: zustand compares by reference and the
+    // sim's buffer is mutated in place, so handing it over would push a value the HUD never re-reads.
+    boostTimers: Array.from(b.timers),
+    lastBoostAt: b.lastPickupAt,
+    lastBoostKind: b.lastKind,
+    dashCd: g.player.dashCd,
+    dashCdMax: g.player.dashCdMax,
     dead: !isAlive(g.player),
     lastHitAt: g.lastHitAt,
     runId: g.runId,
@@ -153,10 +188,19 @@ export function stepGame(g: Game, rawDt: number): void {
     return;
   }
 
+  // An outstanding upgrade choice freezes the field the same way death does (DESIGN §6.3). It is the
+  // only pause in the game: three cards is a decision, and asking for one while a crowd closes in
+  // would make the choice a reflex test rather than a choice. Input is still SAMPLED, so a dash
+  // queued the instant before the level-up is not silently swallowed by the pause.
+  if (isPaused(g.prog)) {
+    g.stepMs = performance.now() - t0;
+    return;
+  }
+
   g.time += dt;
 
   sampleInput(g.input); //                      1. keyboard + touch -> one normalised vector
-  stepPlayer(p, g.input.x, g.input.z, dt); //   2. move, resolve, clamp, face
+  stepPlayer(p, g.input.x, g.input.z, dt, g.input.dash); // 2. dash or move, resolve, clamp, face
   maybeSolveFlow(g.flow, p.x, p.z, dt); //      3. cadence + player-cell-change; re-seed and solve
   stepWaves(g.waves, g.swarm, g.time, dt, p.x, p.z); // 4. budget -> ring spawns
   buildSwarmGrid(g.swarm, g.grid); //           5. ONE rebuild, from live positions
@@ -170,8 +214,14 @@ export function stepGame(g: Game, rawDt: number): void {
     spawnOrb(g.orbs, g.combat.drops[b + DR_X], g.combat.drops[b + DR_Z], g.combat.drops[b + DR_VALUE]);
   }
 
+  // 8a. boosts: age the field, run the spawn clock, collect anything underfoot, push the active
+  //     timers onto combat and the player. Before the orbs step, because the Magnet boost latches
+  //     the whole field and the orbs it latched should start moving on the tick you picked it up.
+  stepBoosts(g.boosts, p, g.combat, g.orbs, g.time, dt);
+
+  mergeOrbs(g.orbs, dt); //                      8b. consolidate a big field of old orbs (2 Hz)
   const gained = stepOrbs(g.orbs, p, dt); //     9. magnet + pickup -> banked XP
-  const levelled = stepProgression(g.prog, g, gained, g.time, dt); // 10. level-ups, apply unlocks
+  const levelled = stepProgression(g.prog, g, gained, g.time, dt); // 10. level-ups and offers
 
   if (takeContact(g.combat, p, g.swarm, g.grid)) g.lastHitAt = g.time; // 11. contact, i-frame gated
 
@@ -204,6 +254,7 @@ if (import.meta.env.DEV) {
     __spawn: (count: number, tier?: number, radius?: number) => number;
     __overlapsProp: (x: number, z: number, r: number) => boolean;
     __grantXp: (amount: number) => number;
+    __choose: (index: number) => boolean;
   };
   w.__game = game;
   // Levels 2..12 are minutes of real play apart by design, and a verification run that has to earn
@@ -211,7 +262,16 @@ if (import.meta.env.DEV) {
   // XP and lets the ordinary unlock table decide what that means — not a "set level" backdoor.
   w.__grantXp = (amount) => {
     stepProgression(game.prog, game, amount, game.time, 0);
+    syncStore(game); // the sim is frozen the moment an offer appears, so nothing else would publish it
     return game.prog.level;
+  };
+  // The same call the choice card makes. Exposed so a verification run can take a card without
+  // finding and clicking one, and so it can auto-resolve offers during checks that are about
+  // something else entirely.
+  w.__choose = (index) => {
+    const ok = chooseUpgrade(game.prog, game, index, game.time);
+    if (ok) syncStore(game);
+    return ok;
   };
   // Exposed so the verification script can ask the arena itself whether a point is inside a prop,
   // rather than keeping its own copy of the 14 boxes that would silently drift out of date.

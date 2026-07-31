@@ -12,12 +12,13 @@
 import { useLayoutEffect, useMemo, useRef } from 'react';
 import { useFrame } from '@react-three/fiber';
 import * as THREE from 'three';
-import { TUNING } from '../config';
+import { ORB_GRADES, orbGrade, TUNING } from '../config';
 import { game } from '../game';
 import { ACTORS } from '../models/registry';
-import { O_AGE, O_X, O_Z, ORB_STRIDE } from '../sim/orbs';
+import { O_AGE, O_VALUE, O_X, O_Z, ORB_STRIDE } from '../sim/orbs';
 
 const dummy = new THREE.Object3D();
+const tint = new THREE.Color();
 
 /** Radians/sec of idle spin, and the bob that makes a still orb read as a pickup rather than debris. */
 const SPIN = 1.6;
@@ -29,15 +30,21 @@ export function Orbs() {
   const actor = useMemo(() => ACTORS.orb, []);
   const geometry = useMemo(() => actor.primitive(), [actor]);
   const material = useMemo(
-    // Unlit and at full colour, so an orb lying in the shadow side of a prop is as findable as one
-    // in the open. It is a readout of "there is XP here", not an object being lit by the scene.
-    () => new THREE.MeshBasicMaterial({ color: actor.tint }),
-    [actor],
+    // WHITE, with the grade colour in instanceColor: three MULTIPLIES the two, so a tinted material
+    // could only ever darken an instance and the gold and magenta grades would never reach their
+    // colour. Same reasoning as the swarm's material (ARCHITECTURE §7).
+    () => new THREE.MeshBasicMaterial({ color: 0xffffff }),
+    [],
   );
 
+  // The colour write is what allocates `instanceColor` — three creates it lazily on the first
+  // setColorAt, and a mesh that has never had one draws white forever.
   useLayoutEffect(() => {
-    mesh.current.count = 0;
-  }, []);
+    const m = mesh.current;
+    for (let i = 0; i < TUNING.MAX_ORBS; i++) m.setColorAt(i, tint.set(actor.tint));
+    if (m.instanceColor) m.instanceColor.needsUpdate = true;
+    m.count = 0;
+  }, [actor]);
 
   useFrame(() => {
     const o = game.orbs;
@@ -50,6 +57,9 @@ export function Orbs() {
       // Pop out of the body that dropped it: full scale is reached over ORB_POP, so a wave of deaths
       // reads as things falling apart rather than as a row of orbs blinking into existence.
       const pop = age < TUNING.ORB_POP ? age / TUNING.ORB_POP : 1;
+      // Merged orbs are bigger and a different colour (DESIGN §8). Without that, a consolidated
+      // field is a screen of identical dots that hides the fact one of them is worth forty.
+      const grade = ORB_GRADES[orbGrade(d[b + O_VALUE])];
       const x = d[b + O_X];
       const z = d[b + O_Z];
       // Phase offset from POSITION, not from age or slot index. Every orb dropped by one aura pulse
@@ -59,13 +69,15 @@ export function Orbs() {
       const phase = age * BOB_RATE + x * 0.7 + z * 0.9;
       dummy.position.set(x, actor.yOffset + Math.sin(phase) * BOB, z);
       dummy.rotation.set(0, age * SPIN + x, 0.4);
-      dummy.scale.setScalar(actor.scale * pop);
+      dummy.scale.setScalar(actor.scale * grade.scale * pop);
       dummy.updateMatrix();
       m.setMatrixAt(i, dummy.matrix);
+      m.setColorAt(i, tint.set(grade.tint));
     }
 
     m.count = o.n;
     m.instanceMatrix.needsUpdate = true;
+    if (m.instanceColor) m.instanceColor.needsUpdate = true;
   });
 
   return (

@@ -4,7 +4,19 @@
 
 import { describe, expect, it } from 'vitest';
 import { TUNING } from '../config';
-import { createOrbs, O_VALUE, O_X, O_Z, ORB_STRIDE, spawnOrb, stepOrbs } from './orbs';
+import {
+  createOrbs,
+  latchAll,
+  mergeOrbs,
+  O_AGE,
+  O_HOME,
+  O_VALUE,
+  O_X,
+  O_Z,
+  ORB_STRIDE,
+  spawnOrb,
+  stepOrbs,
+} from './orbs';
 import { createPlayer } from './player';
 
 const DT = 1 / 60;
@@ -103,6 +115,140 @@ describe('the magnet', () => {
 
     expect(drain(base, p, 2).xp).toBe(0);
     expect(drain(grown, p, 2).xp).toBe(1);
+  });
+});
+
+describe('the latch', () => {
+  it('keeps coming even when the player outruns the magnet', () => {
+    // The bug this exists for: a few Move Speed picks and the character is faster than an orb at the
+    // rim, so an orb that visibly started coming falls out of the radius and stops dead. Once an orb
+    // has started, it arrives.
+    const o = createOrbs();
+    const p = createPlayer();
+    p.speedMul = 1.6; // 11.2 u/s, comfortably faster than ORB_SPEED_MIN
+    spawnOrb(o, 1.5, 0, 3);
+
+    stepOrbs(o, p, DT);
+    expect(o.data[O_HOME]).toBe(1); // latched on the first tick, inside the radius
+
+    // Now run away from it, far past the magnet radius, for a second.
+    let banked = 0;
+    for (let t = 0; t < 1.4; t += DT) {
+      p.x += TUNING.PLAYER_SPEED * p.speedMul * DT;
+      banked += stepOrbs(o, p, DT);
+    }
+    expect(banked).toBe(3); // it caught up
+    expect(o.n).toBe(0);
+  });
+
+  it('does not latch an orb the player never came near', () => {
+    const o = createOrbs();
+    const p = createPlayer();
+    spawnOrb(o, 30, 0, 1);
+    for (let t = 0; t < 1; t += DT) stepOrbs(o, p, DT);
+    expect(o.data[O_HOME]).toBe(0);
+    expect(o.data[O_X]).toBe(30);
+  });
+
+  it('brings in the whole map when the Magnet boost latches it', () => {
+    // DESIGN §6.4. Implemented as "set the latch every orb already has" rather than as a temporary
+    // infinite radius, so the pull, the acceleration and the arrival are the ones the player knows.
+    const o = createOrbs();
+    const p = createPlayer();
+    let expected = 0;
+    for (let i = 0; i < 60; i++) {
+      const a = (i / 60) * Math.PI * 2;
+      const r = 20 + (i % 7) * 8; // out to 68 units — most of the arena, none of it in range
+      spawnOrb(o, Math.cos(a) * r, Math.sin(a) * r, 1 + (i % 4));
+      expected += 1 + (i % 4);
+    }
+    stepOrbs(o, p, DT);
+    expect(o.n).toBe(60); // nothing was in range on its own
+
+    expect(latchAll(o)).toBe(60);
+    let banked = 0;
+    for (let t = 0; t < 12 && o.n > 0; t += DT) banked += stepOrbs(o, p, DT);
+    expect(o.n).toBe(0);
+    expect(banked).toBe(expected);
+  });
+});
+
+describe('merging', () => {
+  /** `count` orbs packed into one merge cell, already old enough to be eligible. */
+  function stale(count: number, x = 40, z = 40) {
+    const o = createOrbs();
+    for (let i = 0; i < count; i++) {
+      spawnOrb(o, x + (i % 3) * 0.4, z + ((i / 3) | 0) * 0.4, 1);
+      o.data[i * ORB_STRIDE + O_AGE] = TUNING.ORB_MERGE_AGE + 1;
+    }
+    return o;
+  }
+
+  it('does nothing until the field is big enough to be a problem', () => {
+    // Below ORB_MERGE_AT the scattered field IS the record of where you have been (DESIGN §8).
+    // Merging early would delete the thing it exists for.
+    const o = stale(TUNING.ORB_MERGE_AT - 1);
+    const before = o.n;
+    expect(mergeOrbs(o, 10)).toBe(0);
+    expect(o.n).toBe(before);
+  });
+
+  it('consolidates a big old field without losing a single XP point', () => {
+    const o = stale(TUNING.ORB_MERGE_AT + 40);
+    const total = o.n; // every orb is worth 1
+    expect(mergeOrbs(o, 10)).toBeGreaterThan(0);
+    expect(o.n).toBeLessThan(total);
+
+    let sum = 0;
+    for (let i = 0; i < o.n; i++) sum += o.data[i * ORB_STRIDE + O_VALUE];
+    expect(sum).toBe(total);
+  });
+
+  it('leaves fresh orbs and orbs already on their way alone', () => {
+    const o = stale(TUNING.ORB_MERGE_AT + 20);
+    // A young one and a latched one, both sitting in the same cell as the stale pile.
+    const young = o.n;
+    spawnOrb(o, 40, 40, 7);
+    const latched = o.n;
+    spawnOrb(o, 40.2, 40, 9);
+    o.data[latched * ORB_STRIDE + O_AGE] = TUNING.ORB_MERGE_AGE + 5;
+    o.data[latched * ORB_STRIDE + O_HOME] = 1;
+
+    mergeOrbs(o, 10);
+
+    // Both survive intact and at their own value. Merging the trail behind a player who is still
+    // fighting would make orbs jump sideways in front of them.
+    const values: number[] = [];
+    for (let i = 0; i < o.n; i++) values.push(o.data[i * ORB_STRIDE + O_VALUE]);
+    expect(values).toContain(7);
+    expect(values).toContain(9);
+    expect(young).toBeGreaterThan(0);
+  });
+
+  it('runs on its own clock, not once per tick', () => {
+    const o = stale(TUNING.ORB_MERGE_AT + 40);
+    // A single frame is nowhere near the 0.5 s cadence, so the first tick must do nothing.
+    expect(mergeOrbs(o, DT)).toBe(0);
+    for (let t = 0; t < 1 / TUNING.ORB_MERGE_HZ; t += DT) mergeOrbs(o, DT);
+    expect(o.n).toBeLessThan(TUNING.ORB_MERGE_AT + 40);
+  });
+
+  it('leaves a merged orb collectable, at its combined value', () => {
+    // One tight cluster inside the magnet radius, so the whole pile lands in a single merge cell and
+    // becomes one big orb — which then has to be worth exactly what went into it when picked up.
+    const o = createOrbs();
+    const total = TUNING.ORB_MERGE_AT + 40;
+    for (let i = 0; i < total; i++) {
+      spawnOrb(o, 2 + ((i % 4) - 1.5) * 0.3, ((((i / 4) | 0) % 4) - 1.5) * 0.3, 1);
+      o.data[i * ORB_STRIDE + O_AGE] = TUNING.ORB_MERGE_AGE + 1;
+    }
+    mergeOrbs(o, 10);
+    expect(o.n).toBeLessThan(4);
+
+    const p = createPlayer();
+    let banked = 0;
+    for (let t = 0; t < 4 && o.n > 0; t += DT) banked += stepOrbs(o, p, DT);
+    expect(banked).toBe(total);
   });
 });
 

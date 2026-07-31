@@ -70,8 +70,18 @@ export interface Combat {
   boltPierce: number;
   /** Bolts per shot, fanned over ±BOLT_SPREAD. 1 until Twin Lance at level 7. */
   boltCount: number;
-  /** Multiplier on every damage source in this file. Level 4, then the late cycle. */
+  /** Multiplier on every damage source in this file. Raised permanently by upgrades. */
   damageMul: number;
+  /**
+   * The BOOST damage multiplier — Quad Damage (DESIGN §6.4) — kept in its own field rather than
+   * folded into `damageMul`. A boost has to expire; a run's permanent upgrades must not. Sharing a
+   * slot means the first Quad Damage to run out takes the level 4 unlock with it.
+   */
+  boostMul: number;
+  /** Volley size multiplier from Guns Akimbo. Same separation, same reason, as `boostMul`. */
+  boltCountMul: number;
+  /** HP restored per kill while Bloodlust is running. 0 otherwise. */
+  lifesteal: number;
   /** Orbiting spheres circling the player. 0 until level 9. */
   orbiters: number;
   /** Orbit phase in radians. Advances whether or not any orbiter exists, so unlocking one at level 9
@@ -124,6 +134,9 @@ export function createCombat(): Combat {
     boltPierce: TUNING.BOLT_PIERCE,
     boltCount: 1,
     damageMul: 1,
+    boostMul: 1,
+    boltCountMul: 1,
+    lifesteal: 0,
     orbiters: 0,
     orbiterPhase: Math.random() * Math.PI * 2,
     orbiterTimer: 0,
@@ -144,9 +157,9 @@ export function createCombat(): Combat {
 /**
  * Apply damage to one enemy. Does NOT remove it — see `reap` below for why that is deferred.
  *
- * `base` is the weapon's number straight out of TUNING; the `damageMul` the unlock table has built
- * up is applied HERE rather than at each call site, so a weapon added later cannot accidentally opt
- * out of the level 4 damage unlock by forgetting to multiply.
+ * `base` is the weapon's number straight out of TUNING; both the permanent `damageMul` the upgrades
+ * have built up and the temporary `boostMul` from Quad Damage are applied HERE rather than at each
+ * call site, so a weapon added later cannot accidentally opt out of either by forgetting to multiply.
  *
  * Already-dead enemies are skipped rather than damaged again: within one tick the aura and a bolt
  * can both land on the same body, and without this the second hit would count a second kill.
@@ -154,7 +167,7 @@ export function createCombat(): Combat {
 function hit(c: Combat, s: Swarm, i: number, base: number): void {
   const b = i * ENEMY_STRIDE;
   if (s.data[b + E_HP] <= 0) return;
-  s.data[b + E_HP] -= base * c.damageMul;
+  s.data[b + E_HP] -= base * c.damageMul * c.boostMul;
   s.data[b + E_FLASH] = TUNING.FLASH_TIME;
 }
 
@@ -180,8 +193,12 @@ function addDeath(c: Combat, x: number, z: number, tier: number): void {
  * consumer that runs after this (`takeContact`) guards with `if (j >= n)` as §5 requires.
  *
  * `i` deliberately does not advance on a kill: the slot now holds a different, unexamined enemy.
+ *
+ * Bloodlust heals from here rather than from a kill counter the caller reads afterwards, because
+ * this is the only place that knows a *specific* enemy died — and capping at `maxHp` per kill rather
+ * than once per tick is what keeps the heal honest when a Quad-Damage pulse kills thirty at once.
  */
-function reap(c: Combat, s: Swarm): void {
+function reap(c: Combat, p: Player, s: Swarm): void {
   const d = s.data;
   for (let i = 0; i < s.n; ) {
     const b = i * ENEMY_STRIDE;
@@ -201,6 +218,7 @@ function reap(c: Combat, s: Swarm): void {
     c.drops[db + DR_X] = x;
     c.drops[db + DR_Z] = z;
     c.drops[db + DR_VALUE] = TIERS[tier].xp;
+    if (c.lifesteal > 0 && p.hp > 0) p.hp = Math.min(p.maxHp, p.hp + c.lifesteal);
     killEnemy(s, i);
   }
 }
@@ -267,7 +285,7 @@ function stepOrbiters(c: Combat, p: Player, s: Swarm, g: Grid, dt: number): void
  * shot around where the player was already aiming instead of moving the shot they had learned.
  */
 function fireBolt(c: Combat, p: Player): void {
-  const count = c.boltCount;
+  const count = c.boltCount * c.boltCountMul;
   for (let k = 0; k < count; k++) {
     if (c.nb >= TUNING.MAX_BOLTS) return;
     const spread = count > 1 ? (-1 + (2 * k) / (count - 1)) * TUNING.BOLT_SPREAD : 0;
@@ -430,7 +448,7 @@ export function stepCombat(c: Combat, p: Player, s: Swarm, g: Grid, dt: number):
   if (alive) stepOrbiters(c, p, s, g, dt);
 
   stepBolts(c, s, g, dt);
-  reap(c, s);
+  reap(c, p, s);
   stepDeaths(c, dt);
 }
 

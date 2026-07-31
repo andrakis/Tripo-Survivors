@@ -4,6 +4,8 @@ import { FpsMeter } from './scene/FpsMeter';
 import { TouchControls } from './ui/TouchControls';
 import { Hud } from './ui/Hud';
 import { LevelUp } from './ui/LevelUp';
+import { LevelUpChoice } from './ui/LevelUpChoice';
+import { BoostToast } from './ui/BoostToast';
 import { GameOver } from './ui/GameOver';
 import { TUNING } from './config';
 
@@ -24,7 +26,9 @@ export function App() {
           a fine pointer (ARCHITECTURE §8). */}
       <Hud />
       <LevelUp />
+      <BoostToast />
       <TouchControls />
+      <LevelUpChoice />
       <GameOver />
     </>
   );

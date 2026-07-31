@@ -39,6 +39,13 @@ export const TUNING = {
   PLAYER_IFRAMES: 0.6, // seconds of invulnerability after taking a hit
   PICKUP_R: 3.0, // XP orb magnet radius
 
+  // --- dash (DESIGN §5.1) ---
+  DASH_SPEED: 30, // ~4× walking, so the dash reads as a different verb rather than a sprint
+  DASH_TIME: 0.16, // 4.8 units of travel: through a front rank, not across the arena
+  DASH_COOLDOWN: 2.2, // the level-1 cooldown; a level-up stat shortens it
+  DASH_IFRAMES: 0.22, // slightly longer than the dash itself, so arriving inside a crowd is survivable
+  // — the dash is an escape, and one that drops you into contact damage on frame 10 is a trap.
+
   // --- swarm steering (ported from Breach/src/config.ts:105-131) ---
   // SEP and SEP_PUSH are BOTH required: the steering bias alone gets normalised away whenever the
   // flow heading dominates and the crowd collapses to a point. See ARCHITECTURE §4.3.
@@ -94,6 +101,30 @@ export const TUNING = {
   ORB_SPEED_MAX: 30, // ...and at the player. The gap is what makes a pickup snap rather than drift.
   ORB_TOUCH: 0.9, // distance at which an orb is banked
   ORB_POP: 0.25, // seconds an orb spends scaling up out of the body that dropped it
+  ORB_HOME_MUL: 1.7, // a LATCHED orb's floor speed, as a multiple of the player's CURRENT speed.
+  // Once an orb has started coming it never gives up (DESIGN §8), and "never gives up" has to be
+  // measured against the player: at level 8+ the character outruns any fixed number, and an orb
+  // that visibly chases and then falls behind is worse than one that never moved.
+
+  // --- orb merging (DESIGN §8) ---
+  ORB_MERGE_AT: 120, // field size at which merging starts. Below this the scattered field IS the
+  // record of where you have been, and consolidating it early would delete the thing it is for.
+  ORB_MERGE_AGE: 12, // seconds an orb must have lain uncollected before it can merge
+  ORB_MERGE_CELL: 4.0, // orbs sharing a cell this size merge into one
+  ORB_MERGE_HZ: 2, // merge passes per second
+
+  // --- boosts (DESIGN §6.4) ---
+  BOOST_FIRST: 25, // seconds before the first one appears
+  BOOST_INTERVAL: 40, // mean seconds between boosts...
+  BOOST_JITTER: 14, // ...± this, so they are not a metronome the player can plan around
+  BOOST_R_MIN: 11, // spawn distance from the player. Inside the view's half-diagonal at the low end
+  BOOST_R_MAX: 26, // (visible now) and outside it at the high end (worth going to find).
+  BOOST_PICKUP_R: 1.3,
+  BOOST_TRIES: 12, // rejection-sample attempts before giving up on this spawn
+  MAX_BOOSTS: 6, // uncollected boosts on the field at once
+  QUAD_MUL: 4, // Quad Damage: outbound damage multiplier while active
+  AKIMBO_MUL: 2, // Guns Akimbo: bolts per volley multiplier while active
+  BLOODLUST_HEAL: 1, // HP restored per kill while Bloodlust is active
 
   // --- level-up feedback (DESIGN §12 rule 4, applied to the good news) ---
   SHAKE_TIME: 0.35, // seconds a level-up shake takes to decay to nothing
@@ -124,7 +155,7 @@ export const TUNING = {
   // --- progression (DESIGN §8) ---
   XP_BASE: 5,
   XP_EXP: 1.45, // xpToNext(level) = ceil(XP_BASE * level ** XP_EXP)
-  LATE_STEP: 1.1, // the level 13+ repeating cycle: +10% to one stat per level (DESIGN §6.3)
+  OFFER_COUNT: 3, // upgrades offered at a level-up the player chooses (DESIGN §6.3)
 
   // --- camera (ARCHITECTURE §9) ---
   CAM_OFFSET: [0, 26, 26] as const, // ~45° down, fixed world yaw, never rotates
@@ -154,6 +185,81 @@ export const TIERS = [
 
 export const TIER_COUNT = TIERS.length;
 export const ELITE_TIER = 3;
+
+/**
+ * The boosts that spawn on the field (DESIGN §6.4).
+ *
+ * Order IS identity, exactly as with TIERS: a pickup's `kind` field is an index into this array, so
+ * inserting one in the middle re-labels every boost already lying on the ground and every live
+ * timer. Append only.
+ *
+ * `duration` 0 means the boost fires once and is over — there is nothing to time down, and the HUD
+ * knows not to show a chip for it.
+ */
+export const BOOSTS = [
+  {
+    id: 'magnet',
+    label: 'MAGNET',
+    detail: 'every orb on the map comes to you',
+    duration: 0,
+    tint: 0x8fe3ff,
+  },
+  {
+    id: 'invincible',
+    label: 'INVINCIBLE',
+    detail: 'no damage',
+    duration: 15,
+    tint: 0xffe9a8,
+  },
+  {
+    id: 'quad',
+    label: 'QUAD DAMAGE',
+    detail: '4× outbound damage',
+    duration: 15,
+    tint: 0xc45ad1,
+  },
+  {
+    id: 'akimbo',
+    label: 'GUNS AKIMBO',
+    detail: 'double the bolts',
+    duration: 15,
+    tint: 0xffb347,
+  },
+  {
+    id: 'bloodlust',
+    label: 'BLOODLUST',
+    detail: '+1 HP per kill',
+    duration: 30,
+    tint: 0xd1585a,
+  },
+] as const;
+
+export const BOOST_COUNT = BOOSTS.length;
+export const BK_MAGNET = 0;
+export const BK_INVINCIBLE = 1;
+export const BK_QUAD = 2;
+export const BK_AKIMBO = 3;
+export const BK_BLOODLUST = 4;
+
+/**
+ * Orb grades: how a merged orb reads (DESIGN §8). Highest `min` at or below the orb's value wins,
+ * so this table is searched from the end and must stay ascending.
+ *
+ * The point of the colour is that a consolidated field still tells you where the money is. A screen
+ * of identical cyan dots after a merge pass would hide the fact that one of them is worth forty.
+ */
+export const ORB_GRADES = [
+  { min: 0, tint: 0x8fe3ff, scale: 1.0 },
+  { min: 5, tint: 0x7fd15a, scale: 1.3 },
+  { min: 25, tint: 0xffd166, scale: 1.6 },
+  { min: 100, tint: 0xff7ad1, scale: 2.0 },
+] as const;
+
+/** Index into ORB_GRADES for a value. */
+export function orbGrade(value: number): number {
+  for (let i = ORB_GRADES.length - 1; i > 0; i--) if (value >= ORB_GRADES[i].min) return i;
+  return 0;
+}
 
 // docs/ART-STYLE.md. The stage is desaturated and dim; all chroma is spent on the cast.
 export const COLORS = {

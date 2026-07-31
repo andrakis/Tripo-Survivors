@@ -10,7 +10,7 @@
 // visual position — the same reason the sim never touches React (ARCHITECTURE §3).
 
 import { useEffect, useMemo, useRef } from 'react';
-import { setTouchVector } from '../input';
+import { queueDash, setTouchVector } from '../input';
 
 /** Pixels of travel for full deflection. Roughly a thumb's comfortable arc without lifting. */
 const STICK_R = 56;
@@ -96,6 +96,37 @@ export function TouchControls() {
           touchAction: 'none',
         }}
       />
+
+      {/* Dash, on the RIGHT half — the thumb that is not driving. It queues the same edge the space
+          bar does (src/input.ts), so there is one dash code path exactly as there is one movement
+          one. `pointerdown` rather than a click: a tap-to-click round trip is ~100 ms of latency on
+          an action whose whole value is that it happens now. */}
+      <div
+        onPointerDown={(e) => {
+          e.preventDefault();
+          queueDash();
+        }}
+        style={{
+          position: 'fixed',
+          right: 28,
+          bottom: 40,
+          width: 92,
+          height: 92,
+          borderRadius: '50%',
+          zIndex: 6,
+          touchAction: 'none',
+          border: '2px solid #ffe9a877',
+          background: '#0f131a55',
+          color: '#ffe9a8cc',
+          display: 'grid',
+          placeItems: 'center',
+          font: '700 13px ui-monospace, SFMono-Regular, Menlo, monospace',
+          letterSpacing: 2,
+          userSelect: 'none',
+        }}
+      >
+        DASH
+      </div>
 
       {/* The stick itself. pointerEvents none so it never intercepts from the surface above. */}
       <div

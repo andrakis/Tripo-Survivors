@@ -7,8 +7,8 @@ a game; M5 makes it look like one; M6 is the payload the project was built to de
 See [DESIGN.md](DESIGN.md) for the systems these milestones serve and
 [ARCHITECTURE.md](ARCHITECTURE.md) for how they're built.
 
-**Status:** M0–M4 done (M0/M1 2026-07-29, M2 and M3 2026-07-30, M4 2026-07-31).
-M5 (escalation + look) is next.
+**Status:** M0–M4 done (M0/M1 2026-07-29, M2 and M3 2026-07-30, M4 and the M4a gameplay
+pass 2026-07-31). M5 (escalation + look) is next.
 
 ---
 
@@ -293,6 +293,78 @@ toast over an un-paused field. The XP/spawn arithmetic clears level 8 by 2:30 wi
 room to spare (`sim/progression.test.ts`); **tightening that against a real played run
 is M5's balance pass**, which is where it was always scoped.
 
+### M4a — the gameplay pass ✅ done (2026-07-31)
+
+Five changes off the back of playing M4, three of them fixing something that was wrong
+rather than adding something that was missing.
+
+- [x] **Level-ups became a choice.** Every non-weapon level offers three upgrades from a
+      repeatable pool and pauses until one is taken (`ui/LevelUpChoice.tsx`, 1/2/3 or a
+      click). The weapon unlocks at 3, 5, 7, 9 and 11 stay automatic and unchoosable —
+      see [DESIGN §6.3](DESIGN.md) for the split and why it is not all-or-nothing. This
+      **reverses a §11 non-goal**; that entry is now struck through with the reasoning.
+- [x] **Boosts** (`sim/boosts.ts`, `scene/Boosts.tsx`): Magnet, Invincible, Quad Damage,
+      Guns Akimbo and Bloodlust, spawning on a jittered ~40 s clock 11–26 units from the
+      player. Timers push onto live fields every tick, so expiry is free and two
+      overlapping boosts cannot undo each other.
+- [x] **Orbs latch.** Entering the magnet radius sets a flag that is never cleared, and a
+      latched orb is floored at 1.7× the player's *current* speed. This was a real bug: a
+      few Move Speed picks and the character outran the rim of their own magnet, so orbs
+      visibly chased and then stopped.
+- [x] **Orbs merge.** Past 120 on the field, ignored orbs older than 12 s sharing a
+      4-unit cell consolidate into one worth the sum, twice a second, and grade up
+      through four colours by value. No XP is lost.
+- [x] **Dash** on a 2.2 s cooldown (Space/Shift, or a right-thumb button on touch), with
+      i-frames that outlast the movement. `DASH` meter in the HUD; the cooldown is one of
+      the upgrades in the pool.
+- [x] Tests: 40 new vitest cases (118 total) — the pause/choice protocol, offer
+      distinctness and reachability, every upgrade's effect, each boost's effect and its
+      expiry, the latch under a fleeing player, merge conservation and its three gates,
+      dash distance/cooldown/i-frames/collision, and the dash input edge.
+- [x] `npm run verify` extended to 77 browser checks.
+
+**Verified** — 77/77 browser checks over three consecutive runs at a locked 60 fps,
+`lint`/`build`/`test` clean. The tick still costs **0.30 ms** with 2000 orbs and 400
+enemies live. New evidence: `shots/level-up-choice.png` (three cards over a frozen
+field), `shots/boost.png`, `shots/orb-merge.png`.
+
+### What M4a learned
+
+- **A verification script that levels up now also *pauses*.** From this milestone a
+  choice level freezes the run, and almost every check in `drive.mjs` kills things — so
+  the first level-up would stop the world and everything after it would be measuring a
+  corpse. Fixed with a page-side interval that answers offers through `__choose`, the
+  same call the card's own button makes, switched off around the checks that are about
+  the card. This is the fourth time the harness has had to be taught not to disturb what
+  it measures, and the first time the sim stopping was the disturbance.
+- **An HP check cannot also be levelling up.** `standing in a crowd costs HP` failed one
+  run in five with `100 -> 125`: the player *gained* health, because the auto-picker took
+  Max HP mid-window and that card heals to full. Any check that is a difference between
+  two HP readings now runs with XP frozen (magnet radius zeroed — ordinary sim state, the
+  same field the Magnet upgrade writes). Worth stating plainly: the choice system made
+  several previously-deterministic checks probabilistic, and the failures surface as one
+  bad run in several rather than as a red build.
+- **A random offer breaks any check that asserts a specific stat.** Three of M4's
+  browser checks asserted the old fixed table's outcomes and had to be rewritten around
+  what is still deterministic: the weapon spine, and *pick accounting* — every upgrade
+  leaves a signature on its live field, so six choice levels must reconstruct to exactly
+  six applications. That check immediately earned its place by failing at five, because
+  the first version of the arithmetic forgot the Fire rate card existed.
+- **The orb latch was invisible until Move Speed stacked.** At level 1 the magnet is
+  strictly faster than the player and nothing is wrong. The bug only exists after a few
+  +10% picks, which is exactly the regime a play session reaches and a unit test does
+  not — the fix is floored against `p.speedMul` rather than a constant precisely so it
+  cannot come back at level 30.
+- **Merging had to be gated three ways, and each gate is protecting a different thing.**
+  Field size (the early scattered trail *is* the record of where you have been), age (an
+  orb must have been genuinely ignored, or orbs jump sideways in front of a player who
+  is still fighting), and not-latched (an orb already on its way is nobody's to move).
+  The first version had only the size gate and orbs teleported out from under the player.
+- **Boost effects must not share a field with permanent upgrades.** Folding Quad Damage
+  into `combat.damageMul` is the obvious implementation and it is wrong: the first boost
+  to expire resets the multiplier and silently deletes every Damage pick the player has
+  taken. Separate fields, multiplied at the single point where damage is applied.
+
 ### What M4 learned
 
 - **The printed XP table in DESIGN §8 did not match its own formula.** Levels 5, 8 and
@@ -387,10 +459,14 @@ player.
 
 ## Not on this roadmap
 
-Deliberately out of scope; listed so they aren't re-proposed. Card-draft level-ups ·
-meta-progression between runs · sound · multiplayer or netcode · a worker or GPU
-simulation path · a second arena · bosses.
+Deliberately out of scope; listed so they aren't re-proposed. Meta-progression between
+runs · sound · multiplayer or netcode · a worker or GPU simulation path · a second
+arena · bosses.
 
-Rationale for each is in [DESIGN.md §11](DESIGN.md). The scaling story (worker →
+**Card-draft level-ups came off this list in M4a** and shipped — for stat upgrades, with
+the weapon unlocks left on their fixed schedule. [DESIGN §6.3](DESIGN.md) records what
+changed and which half of the original argument held up.
+
+Rationale for the rest is in [DESIGN.md §11](DESIGN.md). The scaling story (worker →
 GPU residency) is fully worked out in [Breach](../../Breach/docs/ROADMAP.md) and this
 repo deliberately does not retell it.
