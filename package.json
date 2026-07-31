@@ -8,6 +8,7 @@
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
+    "serve": "npm run build && vite preview",
     "lint": "tsc --noEmit",
     "test": "vitest run --passWithNoTests",
     "shot": "node scripts/shot.mjs",

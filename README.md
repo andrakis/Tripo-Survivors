@@ -106,14 +106,21 @@ npm run dev        # http://localhost:5182
 |---|---|
 | `npm run dev` | dev server on 5182 |
 | `npm run build` | typecheck + production build |
-| `npm run preview` | serve the build on 4182 |
+| `npm run serve` | **build, then serve it on 4182** — minified, one bundle |
+| `npm run preview` | serve whatever is already in `dist/`, without rebuilding |
 | `npm run lint` | `tsc --noEmit` |
 | `npm test` | vitest over `src/sim/` |
 | `npm run verify` | drives the game in a **headed** browser and asserts against sim truth |
 
+`serve` is the one to use for a real look at the shipped game: `preview` on its own will
+happily serve a stale `dist/` from an earlier build. Note that the production bundle
+strips the `window.__game` debug seam (it is behind `import.meta.env.DEV`), so
+`npm run verify` only works against `npm run dev`.
+
 **Controls:** WASD or arrows on desktop, virtual thumbstick on touch — add `?touch=1`
-to force the thumbstick on a desktop. Attacks are automatic. Enter, Space or the button
-restarts from the game-over card. That's all of them.
+to force the thumbstick on a desktop. Attacks are automatic. Space or Shift dashes, and
+there is a dash button under the right thumb on touch. 1/2/3 takes an upgrade card at a
+level-up. Enter or Space restarts from the game-over card. That's all of them.
 
 ## Stack
 

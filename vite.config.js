@@ -14,18 +14,29 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 // failure mode we can eliminate. Real-404 anything under /models/; everything else keeps the
 // SPA fallback. See docs/ARCHITECTURE.md §1.1. Ported from Breach.
 function staticAsset404() {
-  const publicDir = resolve(__dirname, 'public');
+  // Dev serves models straight out of public/; a built site serves them out of dist/, where the
+  // build has copied them. Same rule, two roots — so the middleware takes the root as an argument
+  // rather than the two hooks below drifting apart.
+  const guard = (root) => (req, res, next) => {
+    const url = req.url || '';
+    if (!/^\/models\//.test(url)) return next();
+    const filePath = resolve(root, '.' + url.split('?')[0]);
+    if (existsSync(filePath)) return next();
+    res.statusCode = 404;
+    res.end('Not found');
+  };
+
   return {
     name: 'static-asset-404',
     configureServer(server) {
-      server.middlewares.use((req, res, next) => {
-        const url = req.url || '';
-        if (!/^\/models\//.test(url)) return next();
-        const filePath = resolve(publicDir, '.' + url.split('?')[0]);
-        if (existsSync(filePath)) return next();
-        res.statusCode = 404;
-        res.end('Not found');
-      });
+      server.middlewares.use(guard(resolve(__dirname, 'public')));
+    },
+    // `npm run serve` is the closest thing this project has to production, and it is where a viewer
+    // will check that their model actually shipped. Without this hook the SPA fallback returns
+    // index.html for a misplaced GLB there too — the one failure mode the plugin exists to kill,
+    // surviving in exactly the mode where it matters most.
+    configurePreviewServer(server) {
+      server.middlewares.use(guard(resolve(__dirname, 'dist')));
     },
   };
 }
