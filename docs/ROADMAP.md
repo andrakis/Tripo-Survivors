@@ -7,7 +7,8 @@ a game; M5 makes it look like one; M6 is the payload the project was built to de
 See [DESIGN.md](DESIGN.md) for the systems these milestones serve and
 [ARCHITECTURE.md](ARCHITECTURE.md) for how they're built.
 
-**Status:** M0–M2 done (M0/M1 2026-07-29, M2 2026-07-30). M3 (combat) is next.
+**Status:** M0–M3 done (M0/M1 2026-07-29, M2 and M3 2026-07-30). M4 (XP + progression)
+is next.
 
 ---
 
@@ -177,21 +178,79 @@ whole tick costs **0.10 ms** against ARCHITECTURE §11's 2 ms budget, at 60 fps.
   they now are. Both had to be rewritten as controlled experiments (clear the field
   first; place the rank deliberately) before they measured the game at all.
 
-## Milestone 3 — Combat ⬜ not started
+## Milestone 3 — Combat ✅ done (2026-07-30)
 
 **Why here:** first point at which it is a game rather than a simulation.
 
-- [ ] `sim/combat.ts` — aura pulse (2/s, radius 3.0, 6 dmg) using the enemy grid as
+- [x] `sim/combat.ts` — aura pulse (2/s, radius 3.0, 6 dmg) using the enemy grid as
       its broad-phase; bolts (stride 6) fired along facing on a 0.55 s cadence,
-      swept-segment vs the grid, pierce counter.
-- [ ] Enemy HP, `flash` hit response, death → scale-punch.
-- [ ] Contact damage to the player, 0.6 s i-frames, red vignette.
-- [ ] `scene/AuraRing.tsx`, `scene/Projectiles.tsx`.
-- [ ] `ui/GameOver.tsx` — time, level, kills, restart.
-- [ ] `store.ts` + `ui/Hud.tsx` — HP and run clock, synced at 10 Hz.
+      swept-segment vs the grid, pierce counter. Removal is **deferred to one reap
+      pass** at the end of the step, so indices stay stable while every weapon reads
+      them — see below.
+- [x] `sim/grid.ts` — `queryNeighbors` now sizes its scan ring from the query radius
+      instead of a fixed 3×3. The aura is 3.0 against a 1.1-unit cell; the old form
+      reached 1.65 and would have silently spared two thirds of the ring.
+- [x] Enemy HP, `flash` hit response, death → scale-punch (a small marker population
+      drawn through the tier's own instanced mesh, so an imported model dies as
+      itself with no edit in `scene/`).
+- [x] Contact damage to the player — **worst** touching enemy, not the first the cell
+      walk reaches — 0.6 s i-frames, red vignette.
+- [x] `scene/AuraRing.tsx`, `scene/Projectiles.tsx`.
+- [x] `ui/GameOver.tsx` — time, level, kills, restart on click or Enter/Space.
+      `resetGame` mutates the singleton in place; every scene component holds a
+      reference to it.
+- [x] `store.ts` + `ui/Hud.tsx` — HP, run clock and kills, synced at 10 Hz.
+- [x] Tests: 19 new vitest cases — aura radius and cadence · bolt pierce, sweep and
+      hit-once-per-flight · kill/XP accounting under both weapons at once · contact
+      damage and the i-frame gate · the grid at a radius bigger than its cell.
+- [x] `npm run verify` extended to 46 browser checks, including the full death →
+      card → restart path.
 
 **Done when:** a full run is playable start to death, and dying feels like a
-consequence of position rather than a surprise.
+consequence of position rather than a surprise. **All verified** — 46/46 browser
+checks at a locked 60 fps, `lint`/`build`/`test` clean. `shots/combat.png` is the
+aura grinding an arriving front with bolts in flight; `shots/game-over.png` is the
+card over a frozen field. The whole tick with combat at the 400 cap costs
+**0.10–0.40 ms** against the 2 ms budget.
+
+### What M3 learned
+
+- **A swept-segment hit test still hits the same enemy three times.** The bolt covers
+  0.43 units a tick and its hit radius is 0.75, so an enemy sits inside the swept
+  segment for about three consecutive ticks — and a plain "distance to the segment"
+  test fires on every one of them. It presents as *pierce not working*: the first
+  target eats the whole budget and the bolt dies before reaching the second. The fix
+  is to split the test — perpendicular distance to the bolt's infinite **line**
+  decides *whether* it can ever hit, and the foot parameter `t ∈ (0, 1]` decides
+  *when*. Because `t` falls by exactly 1.0 per tick (the segments tile the line),
+  precisely one tick of the flight qualifies. One hit per enemy per bolt, from the
+  geometry, with no per-bolt hit list to carry.
+- **Kill lazily, in one pass, at the end.** Swap-remove moves a live enemy into the
+  dead one's slot, so an index taken a moment ago names somebody else. If the aura
+  removed as it went, every bolt later in the same tick would be reading a table that
+  had shifted underneath it — and the shared grid would be wrong *during* the phase
+  that reads it hardest. Deferring is what keeps the rest of `combat.ts` boring.
+- **A full-white hit flash inverts the whole look.** The aura hits everything in the
+  ring on the same frame, so flashing to white turned the crowd around the player
+  into a single white mass for a quarter of all frames — hiding the player inside it,
+  which is [DESIGN §12](DESIGN.md) rule 1 exactly backwards. `FLASH_MIX` caps it at
+  0.45; the hit still reads and the tier colour survives underneath.
+- **The player needed the see-through pass a milestone early.** M1 logged prop
+  occlusion for M5. M3 made it unarguable — at any real crowd density the player is
+  simply not on screen, and a game whose only verb is "where you stand" cannot have
+  frames where you can't see where you're standing. `scene/Player.tsx` now draws a
+  second unlit silhouette with `depthTest: false` at `renderOrder` 999.
+- **The M2 browser checks had to be disarmed.** They track specific enemy indices
+  across a 14-second window, which was safe only while nothing could die. Three of
+  them failed the moment combat shipped — the same "the harness is measuring itself"
+  trap M2 hit, arriving from the opposite direction. Pathing checks now silence both
+  weapons first, using the same `boltEnabled` field M4's unlock table writes.
+- **A flaky M2 unit test, found and fixed in passing.** "Brings in later tiers" culled
+  the field with `killEnemy(s, 0)`, which swap-removes the *newest* arrival into slot
+  0 and freezes slots 1..49 as the opening seconds of the run forever. The surviving
+  population was therefore all grunts plus whatever landed in slot 0, and the test
+  turned on one coin flip — it failed about a quarter of the time, on M2's own code.
+  It now records tiers as they are spawned.
 
 ## Milestone 4 — XP + progression ⬜ not started
 
@@ -199,6 +258,10 @@ consequence of position rather than a surprise.
       inside `PICKUP_R`, never expire, `MAX_ORBS = 2048`.
 - [ ] `sim/progression.ts` — `xpToNext = ceil(5 * level^1.45)`, the ordered unlock
       table from [DESIGN.md §6.3](DESIGN.md), stat modifiers applied to live tuning.
+      The seams are already there: `combat.xp` accrues, `combat.auraR` is a field the
+      renderer reads rather than a constant, and `combat.boltEnabled` is what level 3
+      turns on (M3 ships it `true`, since a combat milestone with one weapon is not a
+      combat milestone).
 - [ ] `scene/Orbs.tsx` — instanced, emissive, `age`-pulsed scale.
 - [ ] `ui/LevelUp.tsx` — toast + screen-shake + aura flare. No modal, no pause.
 - [ ] XP bar in the HUD.
@@ -213,8 +276,15 @@ so the whole unlock table is seen in one run.
       ([DESIGN.md §7.1](DESIGN.md)); elites on their own timer.
 - [ ] Per-enemy `seed`-keyed bob and scale jitter so the crowd isn't in lockstep.
 - [ ] Palette pass against [ART-STYLE.md](ART-STYLE.md); fog tuned so the spawn ring
-      sits at the edge of visibility.
-- [ ] Feedback pass: death punch, aura pulse, bolt nudge, level-up shake, hit vignette.
+      sits at the edge of visibility. **Two known offences against
+      [DESIGN §12](DESIGN.md) rule 1 are waiting here:** the brutes are large and
+      saturated enough to out-read the player, and the props are 8-unit blocks in a
+      value range that competes with the cast. M3 already took the third — the
+      player's see-through pass — because an invisible player made the milestone's own
+      acceptance criterion unjudgeable.
+- [ ] Feedback pass: level-up shake, and a second look at the ones M3 shipped (death
+      punch, aura flare, hit vignette, `FLASH_MIX`) once there is a full run to tune
+      against.
 - [ ] Balance pass on the spawn curve against the XP curve.
 
 **Done when:** a run is survivable for ~5 minutes by someone competent, escalation is

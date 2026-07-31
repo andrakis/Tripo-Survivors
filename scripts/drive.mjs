@@ -1,4 +1,4 @@
-// M1 verification: drive the character in a real browser and assert against SIM TRUTH.
+// M1–M3 verification: drive the game in a real browser and assert against SIM TRUTH.
 //
 //   node scripts/drive.mjs [url] [--headless]
 //
@@ -55,6 +55,20 @@ async function capture(name) {
 }
 
 const player = () => page.evaluate(() => ({ ...window.__game.player }));
+
+/**
+ * Put the player somewhere, at full health and untouchable.
+ *
+ * From M3 the sim fights back, and a teleport is always the harness setting up a situation — so
+ * every one of them has to survive the setup. The movement and pathing checks below take a minute of
+ * wall clock, during which the spawn director produces a crowd that will happily kill a stationary
+ * player; death freezes the sim, and everything after it would fail for a reason that has nothing to
+ * do with what it was testing.
+ *
+ * This needs no test-only API: i-frames are ordinary sim state with an ordinary timer, and holding
+ * that gate open is exactly what the game does for 0.6 s after every hit. The M3 checks that are
+ * ABOUT taking damage call `mortal()` first.
+ */
 const teleport = (x, z) =>
   page.evaluate(
     ([px, pz]) => {
@@ -63,9 +77,43 @@ const teleport = (x, z) =>
       p.z = pz;
       p.vx = 0;
       p.vz = 0;
+      p.hp = p.maxHp;
+      p.iframe = 600;
     },
     [x, z],
   );
+
+/**
+ * Silence both weapons, and hand them back.
+ *
+ * The M2 section below tracks specific enemy INDICES across a 14-second window, which was safe when
+ * nothing could die. From M3 a kill swap-removes — the last live enemy drops into the dead one's
+ * slot — so index 7 stops meaning the enemy that started at index 7 and the whole check quietly
+ * measures a different population than the one it set up. Pathing checks have to run in a game that
+ * is not also killing the thing being measured.
+ *
+ * Like `teleport`'s i-frames, this is ordinary sim state and not a test-only API: `boltEnabled` is
+ * the field M4's unlock table flips, and the aura timer is just a timer.
+ */
+const disarm = () =>
+  page.evaluate(() => {
+    window.__game.combat.boltEnabled = false;
+    window.__game.combat.auraTimer = 1e9;
+  });
+const rearm = () =>
+  page.evaluate(() => {
+    window.__game.combat.boltEnabled = true;
+    window.__game.combat.auraTimer = 0;
+  });
+
+/** Hand the player back to the game: full health, no invulnerability, empty field. */
+const mortal = () =>
+  page.evaluate(() => {
+    const g = window.__game;
+    g.player.hp = g.player.maxHp;
+    g.player.iframe = 0;
+    g.swarm.n = 0;
+  });
 
 /** Hold a key for `ms` of wall clock and report how far the player actually moved. */
 async function hold(keys, ms) {
@@ -194,6 +242,10 @@ check('thumbstick overlay is absent on a fine pointer', !desktopStick);
 await touchPage.close();
 
 // --- 7. the swarm (M2) ------------------------------------------------------------------------------
+// Weapons off for the whole section: every check here is about where the crowd GOES, and it cannot be
+// about that while the aura is deleting the front rank of it (see `disarm` above).
+await disarm();
+
 // Read the enemy SoA out of the page. Stride 8: x, z, vx, vz, hp, tier, flash, seed.
 const swarm = () =>
   page.evaluate(() => {
@@ -332,6 +384,302 @@ const capFps = await page.evaluate(() => {
 });
 check('holds 60 fps at cap', capFps !== null && capFps >= 55, `${capFps} fps with 400 enemies`);
 
+// --- 9. combat (M3) ---------------------------------------------------------------------------------
+const combat = () =>
+  page.evaluate(() => {
+    const g = window.__game;
+    return {
+      kills: g.combat.kills,
+      xp: g.combat.xp,
+      nb: g.combat.nb,
+      nd: g.combat.nd,
+      auraR: g.combat.auraR,
+      n: g.swarm.n,
+      hp: g.player.hp,
+      time: g.time,
+      stepMs: g.stepMs,
+    };
+  });
+
+/** Place `count` enemies of `tier` on a ring of exactly `r` around the player, and nothing else. */
+const ring = (count, tier, r) =>
+  page.evaluate(
+    ([c, t, radius]) => {
+      const g = window.__game;
+      const s = g.swarm;
+      s.n = 0;
+      for (let i = 0; i < c; i++) {
+        const a = (i / c) * Math.PI * 2;
+        const b = i * 8;
+        s.data[b] = g.player.x + Math.cos(a) * radius;
+        s.data[b + 1] = g.player.z + Math.sin(a) * radius;
+        s.data[b + 2] = 0;
+        s.data[b + 3] = 0;
+        s.data[b + 4] = [10, 6, 60, 400][t];
+        s.data[b + 5] = t;
+        s.data[b + 6] = 0;
+        s.data[b + 7] = Math.random();
+      }
+      s.n = c;
+    },
+    [count, tier, r],
+  );
+
+await rearm();
+await teleport(-100, 80); // open ground, well clear of every prop
+await page.waitForTimeout(400);
+
+/**
+ * Place a ring of brutes, fire EXACTLY one aura pulse at it, and read the result before anybody has
+ * walked anywhere.
+ *
+ * A pulse has to be triggered deliberately rather than waited for. Left to its own 2/s cadence the
+ * crowd closes on the player between the setup and the reading, and a ring placed at 2.6 units gets
+ * killed at 1.2 — which would pass a "full radius" check that had regressed to a 3×3 cell walk.
+ * Brutes because 60 hp survives the pulse, so the damage is readable, and 2.2 u/s means 120 ms of
+ * settle costs a quarter of a unit.
+ */
+async function onePulse(count, radius) {
+  await ring(count, 2, radius);
+  await page.evaluate(() => {
+    const c = window.__game.combat;
+    // The Lance off and its bolts cleared, or a shot fired seconds ago is still in the air and lands
+    // on the ring during the window — which is a hit from the wrong weapon in a check about which
+    // enemies the AURA can reach. (It happened: one brute out of twelve, at 4.0 units.)
+    c.boltEnabled = false;
+    c.nb = 0;
+    c.auraTimer = 0.001; // fires on the next tick
+  });
+  await page.waitForTimeout(120);
+  const snap = await page.evaluate(() => {
+    const g = window.__game;
+    const out = [];
+    for (let i = 0; i < g.swarm.n; i++) {
+      if (g.swarm.data[i * 8 + 5] !== 2) continue; // skip anything the director added
+      out.push({
+        hurt: g.swarm.data[i * 8 + 4] < 60,
+        d: Math.hypot(g.swarm.data[i * 8] - g.player.x, g.swarm.data[i * 8 + 1] - g.player.z),
+      });
+    }
+    return out;
+  });
+  await page.evaluate(() => {
+    window.__game.combat.boltEnabled = true;
+  });
+  return snap;
+}
+
+// The aura reaches its FULL radius. 2.6 units is inside AURA_R (3.0) but outside the 1.65 that a
+// fixed 3×3 walk of the swarm grid's 1.1-unit cell can see — the exact case that made
+// grid.queryNeighbors size its ring from the radius. A regression here has no symptom except the
+// aura quietly doing less damage than the table says, which is indistinguishable from tuning.
+const inRing = await onePulse(12, 2.6);
+check(
+  'one pulse damages the whole ring at 2.6 u — past the 1.65 a 3x3 cell walk would reach',
+  inRing.length === 12 && inRing.every((e) => e.hurt) && Math.min(...inRing.map((e) => e.d)) > 1.65,
+  `${inRing.filter((e) => e.hurt).length}/${inRing.length} hit, nearest ${Math.min(...inRing.map((e) => e.d)).toFixed(2)} u`,
+);
+
+// ...and stops at it. A ring outside must survive to walk in, which is the whole reason the aura is
+// a positioning decision rather than a passive.
+const outRing = await onePulse(12, 4.0);
+check(
+  'the same pulse leaves a ring at 4.0 u untouched',
+  outRing.length === 12 && outRing.every((e) => !e.hurt),
+  `${outRing.filter((e) => e.hurt).length}/${outRing.length} hit`,
+);
+
+// Sustained: a crowd standing in the ring is ground down and pays out XP.
+await ring(28, 0, 2.6);
+const auraBefore = await combat();
+await page.waitForTimeout(1600); // 3 pulses × 6 damage puts a 10 hp grunt down twice over
+const auraAfter = await combat();
+check(
+  'the aura grinds down a crowd standing in it',
+  auraAfter.kills - auraBefore.kills >= 24,
+  `${auraAfter.kills - auraBefore.kills}/28 killed in ${auraAfter.auraR} u`,
+);
+check(
+  'kills award XP and leave a death marker behind',
+  auraAfter.xp > auraBefore.xp && auraAfter.nd > 0,
+  `${auraAfter.xp - auraBefore.xp} xp, ${auraAfter.nd} markers live`,
+);
+
+// Bolts exist, and fly along the direction the player last moved.
+await teleport(-100, 80);
+await page.evaluate(() => {
+  window.__game.swarm.n = 0;
+});
+await hold(['KeyW'], 400); // face -Z
+await page.waitForTimeout(600);
+const bolts = await page.evaluate(() => {
+  const c = window.__game.combat;
+  const out = [];
+  for (let i = 0; i < c.nb; i++) out.push({ vx: c.bolts[i * 6 + 2], vz: c.bolts[i * 6 + 3] });
+  return { n: c.nb, out, facing: window.__game.player.facing };
+});
+check('the Lance fires on its own', bolts.n > 0, `${bolts.n} in flight`);
+check(
+  'bolts fly along facing, not along velocity',
+  bolts.out.every((b) => b.vz < -20 && Math.abs(b.vx) < 1),
+  `facing ${((bolts.facing * 180) / Math.PI).toFixed(0)}°, v (${bolts.out[0]?.vx.toFixed(1)}, ${bolts.out[0]?.vz.toFixed(1)})`,
+);
+
+// The Lance does damage the aura cannot reach. Brutes in a line down the firing direction, all of
+// them far outside AURA_R and slow enough to stay there for the window.
+await teleport(-100, 80);
+await page.evaluate(() => {
+  const g = window.__game;
+  const s = g.swarm;
+  s.n = 0;
+  g.player.facing = 0; // +Z
+  for (let i = 0; i < 3; i++) {
+    const b = i * 8;
+    s.data[b] = g.player.x;
+    s.data[b + 1] = g.player.z + 10 + i * 3;
+    s.data[b + 2] = 0;
+    s.data[b + 3] = 0;
+    s.data[b + 4] = 60;
+    s.data[b + 5] = 2;
+    s.data[b + 6] = 0;
+    s.data[b + 7] = 0;
+  }
+  s.n = 3;
+});
+await page.waitForTimeout(1500);
+const lanced = await page.evaluate(() => {
+  const g = window.__game;
+  const out = [];
+  for (let i = 0; i < g.swarm.n; i++) {
+    out.push({
+      hp: g.swarm.data[i * 8 + 4],
+      d: Math.hypot(g.swarm.data[i * 8] - g.player.x, g.swarm.data[i * 8 + 1] - g.player.z),
+    });
+  }
+  return out;
+});
+check(
+  'the Lance damages enemies the aura cannot reach',
+  lanced.some((e) => e.hp < 60 && e.d > 3.0),
+  lanced.map((e) => `${e.hp}hp @${e.d.toFixed(1)}u`).join(' '),
+);
+
+// --- 10. taking damage ------------------------------------------------------------------------------
+await teleport(-100, 80);
+await mortal();
+await ring(24, 0, 0.8); // a crowd standing ON the player
+const hurtStart = await combat();
+await page.waitForTimeout(2000);
+const hurtEnd = await combat();
+const lost = hurtStart.hp - hurtEnd.hp;
+check('standing in a crowd costs HP', lost > 0, `${hurtStart.hp} -> ${hurtEnd.hp}`);
+check(
+  'i-frames bound the damage — 24 enemies do not delete the player in one frame',
+  // 2 s at 0.6 s of invulnerability per hit is at most 4 grunt hits (6 each), never 24 × 60 frames.
+  lost <= 4 * 6,
+  `${lost} hp in 2 s (cap ${4 * 6})`,
+);
+const vignette = await page.evaluate(
+  () => !!document.querySelector('div[style*="radial-gradient"]') || window.__game.lastHitAt >= 0,
+);
+check('a hit is recorded for the damage vignette', vignette);
+
+// --- 11. the HUD reads sim truth --------------------------------------------------------------------
+await teleport(-100, 80);
+await page.evaluate(() => {
+  window.__game.swarm.n = 0;
+});
+await page.waitForTimeout(600); // a quiet moment, so the 10 Hz push has certainly caught up
+const hud = await page.evaluate(() => {
+  const g = window.__game;
+  const text = document.body.innerText;
+  return {
+    kills: g.combat.kills,
+    hp: g.player.hp,
+    maxHp: g.player.maxHp,
+    time: g.time,
+    text,
+  };
+});
+const mm = Math.floor(hud.time / 60);
+const ss = String(Math.floor(hud.time) % 60).padStart(2, '0');
+check(
+  'the HUD kill count matches the simulation',
+  hud.text.includes(`${hud.kills} killed`),
+  `sim ${hud.kills}, hud "${hud.text.replace(/\s+/g, ' ').trim().slice(0, 40)}"`,
+);
+check('the HUD clock matches the run clock', hud.text.includes(`${mm}:${ss}`), `${mm}:${ss}`);
+
+// --- 12. the run ends, and starts again -------------------------------------------------------------
+// The M3 "done when": a full run is playable start to death. Rather than wait out a real one, put the
+// player on low health in a crowd — the death PATH is what is under test, not the balance curve.
+await mortal();
+await page.evaluate(() => {
+  window.__game.player.hp = 20;
+});
+// Brutes at 18 contact damage: two hits and it is over. Placed at 5 units and left to walk in rather
+// than stacked on the player — two dozen bodies spawned inside each other's separation radius fling
+// themselves clean off the screen, and the frozen field behind the card is part of what the card is
+// showing.
+await ring(14, 2, 5.0);
+await page.waitForTimeout(5000);
+const dead = await page.evaluate(() => {
+  const g = window.__game;
+  return { hp: g.player.hp, time: g.time, text: document.body.innerText, n: g.swarm.n };
+});
+check('the player can die', dead.hp === 0, `${dead.hp} hp`);
+check('death raises the game-over card', dead.text.includes('YOU DIED'), dead.text.replace(/\s+/g, ' ').slice(0, 60));
+check(
+  'the card shows the run',
+  /survived\s+\d+:\d\d/.test(dead.text) && /killed\s+\d+/.test(dead.text),
+  dead.text.replace(/\s+/g, ' ').match(/survived.*?level\s+\d+/)?.[0] ?? '(not found)',
+);
+
+// The field is frozen behind the card: the run is over, and a crowd still grinding over the body
+// would be claiming otherwise.
+const frozenA = await page.evaluate(() => ({
+  t: window.__game.time,
+  x: window.__game.swarm.data[0],
+}));
+await page.waitForTimeout(700);
+const frozenB = await page.evaluate(() => ({
+  t: window.__game.time,
+  x: window.__game.swarm.data[0],
+}));
+check('the clock and the field stop on death', frozenA.t === frozenB.t && frozenA.x === frozenB.x, `t ${frozenB.t.toFixed(2)}`);
+
+await capture('game-over');
+
+// Restart from the card — the only way out of it, and the only menu in the game.
+await page.click('text=RUN AGAIN');
+await page.waitForTimeout(400);
+const restarted = await page.evaluate(() => {
+  const g = window.__game;
+  return {
+    hp: g.player.hp,
+    time: g.time,
+    kills: g.combat.kills,
+    n: g.swarm.n,
+    x: g.player.x,
+    z: g.player.z,
+    card: document.body.innerText.includes('YOU DIED'),
+  };
+});
+check('RUN AGAIN starts a clean run', !restarted.card && restarted.hp === 100 && restarted.kills === 0, `${restarted.hp} hp, ${restarted.kills} kills, t ${restarted.time.toFixed(1)}`);
+check('the restart puts the player back at the origin on an empty field', Math.hypot(restarted.x, restarted.z) < 1 && restarted.n < 12, `(${restarted.x.toFixed(1)}, ${restarted.z.toFixed(1)}), ${restarted.n} enemies`);
+
+// --- 13. the budget, with combat running ------------------------------------------------------------
+await teleport(-90, 90);
+await page.evaluate(() => window.__spawn(400, 2, 22)); // brutes: 60 hp, so the field stays full
+await page.waitForTimeout(2000);
+const loaded = await combat();
+check('the whole tick stays inside its 2 ms budget with combat at cap', loaded.stepMs < 2, `${loaded.stepMs.toFixed(2)} ms at ${loaded.n} enemies`);
+const combatFps = await page.evaluate(() => {
+  const m = document.body.innerText.match(/(\d+)\s*fps/);
+  return m ? Number(m[1]) : null;
+});
+check('holds 60 fps with combat at cap', combatFps !== null && combatFps >= 55, `${combatFps} fps`);
+
 // --- evidence ---------------------------------------------------------------------------------------
 // Open ground south of the Keep, which sits dead ahead with its two outbuildings flanking it — the
 // arena's most legible geography, and clear of anything that would occlude the character.
@@ -351,11 +699,54 @@ await page.evaluate(() => {
 await page.waitForTimeout(1400);
 // Run TOWARD the camera for the shot, so the facing pip is on the visible side of the capsule.
 await hold(['KeyS'], 250);
+// Clear the harness's invulnerability, or the player is caught mid-blink at 30% opacity — the shot
+// would show the one actor DESIGN §12 rule 1 says must be the brightest thing on screen faded out.
+await page.evaluate(() => {
+  window.__game.player.iframe = 0;
+});
 const fps = await page.evaluate(() => {
   const m = document.body.innerText.match(/(\d+)\s*fps/);
   return m ? Number(m[1]) : null;
 });
 await capture('swarm-tiers');
+
+// M3's own frame: the aura ring on the ground with a front rank grinding into it, bolts in flight,
+// and bodies punching out. Shot mid-fight, because every one of those is a transient.
+//
+// Deliberately a crowd a real run PRODUCES — a front arriving from one side, not a solid annulus
+// packed onto the player. The first version of this shot piled 94 enemies inside 12 units and the
+// resulting wall of bodies hid the player completely, which says nothing true about the game and
+// everything about the harness.
+await teleport(0, 4);
+await mortal();
+await page.evaluate(() => {
+  const g = window.__game;
+  const s = g.swarm;
+  s.n = 0;
+  g.player.facing = 0; // facing +Z, into the arriving front, so the bolts fly toward the camera
+  // A loose arc to the south, spread over 5 units of depth: what the director actually delivers.
+  const put = (count, tier, r0, spread, a0, a1) => {
+    for (let i = 0; i < count; i++) {
+      const a = a0 + ((a1 - a0) * i) / count;
+      const r = r0 + spread * ((i * 37) % 10) / 10;
+      const b = s.n * 8;
+      s.data[b] = g.player.x + Math.sin(a) * r;
+      s.data[b + 1] = g.player.z + Math.cos(a) * r;
+      s.data[b + 2] = 0;
+      s.data[b + 3] = 0;
+      s.data[b + 4] = [10, 6, 60][tier];
+      s.data[b + 5] = tier;
+      s.data[b + 6] = 0;
+      s.data[b + 7] = Math.random();
+      s.n++;
+    }
+  };
+  put(26, 0, 5.5, 5, -1.1, 1.1);
+  put(7, 1, 8, 4, -0.8, 0.8);
+  put(3, 2, 9, 2, -0.4, 0.4);
+});
+await page.waitForTimeout(1600); // the front reaches the ring and the aura starts killing into it
+await capture('combat');
 
 await browser.close();
 

@@ -133,13 +133,20 @@ export function cellOf(g: Grid, x: number, z: number): number {
  * Collect every agent within `radius` of `(x, z)` into `out`, returning how many were written.
  * `out` is caller-owned and never grown — anything past its length is dropped.
  *
- * The 3×3 scan is only correct for `radius <= g.cell`; a larger radius needs a wider ring, and
- * silently returning a short answer would be a horrible bug to find. Callers that want a bigger
- * reach build a grid with a bigger cell — which is exactly why the builder is parametric.
+ * **The ring scanned is sized from `radius`**, `ceil(radius / cell)` cells out, rather than being
+ * fixed at 3×3. A fixed 3×3 is only correct for `radius <= cell`, and the aura's 3.0 against the
+ * swarm grid's 1.1-unit cell is exactly the case that breaks it — it would silently return the
+ * fraction of the crowd standing in the nine cells nearest the player and look like the aura simply
+ * doing less damage than the table says.
+ *
+ * The alternative was a second grid built at a bigger cell, which is what the parametric builder
+ * makes cheap. It isn't worth it: this keeps ONE structure for all four consumers (ARCHITECTURE §6),
+ * and the scan is O((2r+1)²) cells over a grid that is mostly empty. A second grid only starts to
+ * pay when a query radius is many multiples of the cell AND runs every tick.
  *
  * The swarm does NOT use this: it needs the two separation accumulators from the same walk, so it
- * inlines the scan. This is for consumers that just want the neighbour set — the aura and the bolt
- * broad-phase in M3 — and for the tests that check the grid against a brute-force O(n²) scan.
+ * inlines the scan. This is for consumers that just want the neighbour set — the aura and contact
+ * damage — and for the tests that check the grid against a brute-force O(n²) scan.
  */
 export function queryNeighbors(
   g: Grid,
@@ -159,13 +166,14 @@ export function queryNeighbors(
   else if (cz >= g.gh) cz = g.gh - 1;
 
   const r2 = radius * radius;
+  const reach = Math.max(1, Math.ceil(radius / g.cell));
   let n = 0;
 
-  for (let oz = -1; oz <= 1; oz++) {
+  for (let oz = -reach; oz <= reach; oz++) {
     const ccz = cz + oz;
     if (ccz < 0 || ccz >= g.gh) continue;
     const rowBase = ccz * g.gw;
-    for (let ox = -1; ox <= 1; ox++) {
+    for (let ox = -reach; ox <= reach; ox++) {
       const ccx = cx + ox;
       if (ccx < 0 || ccx >= g.gw) continue;
       const c = rowBase + ccx;

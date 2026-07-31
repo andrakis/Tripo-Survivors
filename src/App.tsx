@@ -2,6 +2,8 @@ import { Canvas } from '@react-three/fiber';
 import { Scene } from './scene/Scene';
 import { FpsMeter } from './scene/FpsMeter';
 import { TouchControls } from './ui/TouchControls';
+import { Hud } from './ui/Hud';
+import { GameOver } from './ui/GameOver';
 import { TUNING } from './config';
 
 export function App() {
@@ -16,8 +18,12 @@ export function App() {
         <FpsMeter />
       </Canvas>
 
-      {/* DOM overlay, outside the Canvas — it renders itself away on a fine pointer (ARCHITECTURE §8). */}
+      {/* DOM overlays, outside the Canvas. They subscribe to the 10 Hz store, so they re-render on a
+          human clock and never on the sim's (ARCHITECTURE §3). TouchControls renders itself away on
+          a fine pointer (ARCHITECTURE §8). */}
+      <Hud />
       <TouchControls />
+      <GameOver />
     </>
   );
 }

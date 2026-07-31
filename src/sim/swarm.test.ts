@@ -320,17 +320,33 @@ describe('spawn director', () => {
     }
   });
 
-  it('brings in later tiers as the run goes on', () => {
+  it('brings in later tiers as the run goes on, and never before their entry time', () => {
     const s = createSwarm();
     const w = createWaves();
+    /** tier -> the run time it was first spawned at. Recorded AS SPAWNED, see below. */
+    const firstSeen = new Map<number, number>();
+
     for (let t = 0; t < 200; t += DT) {
+      const before = s.n;
       stepWaves(w, s, t, DT, 0, 0);
-      // Keep the field clear so the cap never throttles the director.
-      while (s.n > 50) killEnemy(s, 0);
+      for (let i = before; i < s.n; i++) {
+        const tier = s.data[i * ENEMY_STRIDE + E_TIER];
+        if (!firstSeen.has(tier)) firstSeen.set(tier, t);
+      }
+      // Keep the field clear so the cap never throttles the director. Cull from the TOP: culling
+      // index 0 swap-removes the newest arrival down into slot 0 and freezes slots 1..49 as the
+      // opening seconds of the run forever — so the surviving population is all grunts plus
+      // whatever happens to be in slot 0, and the whole test turns on one coin flip. (It did: this
+      // failed about a quarter of the time until the tiers were recorded at spawn instead.)
+      while (s.n > 50) killEnemy(s, s.n - 1);
     }
-    const tiers = new Set<number>();
-    for (let i = 0; i < s.n; i++) tiers.add(s.data[i * ENEMY_STRIDE + E_TIER]);
-    expect(tiers.size).toBeGreaterThan(1);
+
+    expect(firstSeen.has(0)).toBe(true); // grunts, from the start
+    for (const tier of [1, 2]) {
+      expect(firstSeen.has(tier)).toBe(true);
+      expect(firstSeen.get(tier)!).toBeGreaterThanOrEqual(TIERS[tier].entersAt);
+    }
+    expect(firstSeen.has(3)).toBe(false); // elites enter at 240 s, past this window
   });
 
   it('holds at the cap rather than banking a budget that dumps on the next kill', () => {

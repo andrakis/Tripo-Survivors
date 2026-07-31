@@ -45,7 +45,7 @@ src/
     player.ts            input -> velocity -> position; facing; HP; i-frames
     swarm.ts             enemy SoA + step                       (ported from Breach)
     waves.ts             spawn director
-    combat.ts            aura pulses, bolts, damage resolution
+    combat.ts            aura pulses, bolts, damage resolution, the deferred reap
     orbs.ts              XP orbs, magnet, pickup
     progression.ts       XP curve, level-ups, unlock table, stat modifiers
   models/registry.ts   THE TUTORIAL SEAM — see MODEL-PIPELINE.md
@@ -121,6 +121,18 @@ Keep it **parametric over `(positions, stride, count, cell)`** exactly as Breach
 it. One routine then serves enemies (cell ≈ `SEP_R`), bolts, and orbs, and one
 population can scan another's grid — which is how the aura and the bolts do their
 broad-phase without a second data structure.
+
+**`queryNeighbors` sizes its scan ring from the radius**, `ceil(radius / cell)` cells
+out, rather than the fixed 3×3 a grid query is usually written as. That matters as
+soon as combat exists: the swarm's cell is `SEP_R` (1.1) and the aura is 3.0, so a
+fixed 3×3 reaches 1.65 units and returns the fraction of the crowd standing nearest
+the player. Nothing about that failure looks like a bug — the aura simply does less
+damage than the table says, which is indistinguishable from bad tuning.
+
+The alternative is a second grid built at a bigger cell, which the parametric builder
+makes easy. It isn't worth it here: one structure serves all four consumers (§6) and
+the scan is O((2r+1)²) cells over a grid that is mostly empty. A second grid starts to
+pay only when a query radius is many multiples of the cell *and* runs every tick.
 
 Rebuilt once per tick from live positions. Consumers guard stale indices with
 `if (j >= N)` — see §5.
@@ -254,6 +266,39 @@ defenders and the garrison melee · mega units · every GPU path (`gpuAgents`,
 `gpuNav`, `gpuFields`) · the worker bridge and frame protocol · VAT rendering
 (deferred to M6, see [MODEL-PIPELINE.md](MODEL-PIPELINE.md)).
 
+### 4.5 Written here, not ported: the bolt hit test — `sim/combat.ts`
+
+Breach has nothing to lift for this; it is worth writing down because the obvious
+version is wrong in a way that reads as a different feature being broken.
+
+A bolt travels `BOLT_SPEED × dt` per tick — 0.43 units at 60 fps, 1.3 at the 50 ms
+clamp — so it has to be tested as a **swept segment**, never as a point at its new
+position. That much is standard. The trap is the narrow phase:
+
+```
+WRONG:  distance from the enemy to the swept segment  <=  hitR
+```
+
+The hit radius is 0.75 and the per-tick travel is 0.43, so an enemy stays inside that
+segment for about **three consecutive ticks** and is hit on every one of them. The
+symptom is not "damage is too high" — the pierce budget is spent on the first target
+and the bolt dies before reaching the second, so it reads as *pierce not working*.
+
+Split the test instead:
+
+```
+perpendicular distance to the bolt's infinite LINE  <=  hitR     — whether, ever
+foot parameter  t = ((E - P₀) · d) / |d|²  ∈  (0, 1]             — when
+```
+
+The perpendicular distance is identical on every tick, so it alone decides whether
+this bolt can ever hit this enemy. `t` falls by exactly 1.0 each tick — the segments
+tile the line end to end — so **precisely one tick of the flight qualifies**. One hit
+per enemy per bolt, guaranteed by the geometry rather than by a per-bolt hit list.
+
+The broad phase still samples the segment at one-cell intervals and unions the
+results; those sample discs overlap, so hits *within* a tick still need a stamp.
+
 ## 5. Entity lifetime: swap-remove
 
 Every population — enemies, bolts, orbs — is a struct-of-arrays with a live count `N`,
@@ -280,7 +325,7 @@ exactly as Breach does.
 > always exactly right and there is no gap for that class of bug to live in.
 
 Buffers are allocated once at their cap (`MAX_ENEMIES` 400, `MAX_BOLTS` 128,
-`MAX_ORBS` 2048) and never grow. At cap, spawning is simply skipped.
+`MAX_ORBS` 2048, `MAX_DEATHS` 96) and never grow. At cap, spawning is simply skipped.
 
 ### 5.1 Data layouts
 
@@ -289,10 +334,34 @@ Buffers are allocated once at their cap (`MAX_ENEMIES` 400, `MAX_BOLTS` 128,
 | `enemies` | 8 | `x, z, vx, vz, hp, tier, flash, seed` |
 | `bolts` | 6 | `x, z, vx, vz, life, pierceLeft` |
 | `orbs` | 4 | `x, z, value, age` |
+| `deaths` | 4 | `x, z, tier, age` |
 
 `seed` is a per-enemy random constant used for visual variation (bob phase, slight
 scale jitter) so a crowd of identical models doesn't move in lockstep. `flash` is a
 decaying hit-flash timer read only by the renderer.
+
+`deaths` is the scale-punch markers. They are purely visual, but they live in the sim
+because *deciding one exists* is sim work, and they carry `tier` so the renderer can
+draw each one through that tier's own instanced mesh — an imported model dies as
+itself, with no edit anywhere in `scene/`.
+
+### 5.2 Removal is deferred to one reap pass
+
+Damage never removes anything. `combat.step` runs both weapons to completion, then a
+single pass swap-removes everything at 0 HP.
+
+This is what keeps the weapons simple. Swap-remove moves a live enemy into the dead
+one's slot, so an index taken a moment ago names a different enemy. If the aura killed
+as it went, every bolt later in the same tick would be working from indices that had
+shifted underneath it, and the grid built in step 5 would be wrong *during* the phase
+that reads it hardest. Nothing moves until every weapon has finished.
+
+The one consumer that runs after the reap — contact damage, step 11 — sees a grid that
+is up to one tick stale, and guards with `if (j >= N)` as above. The residual cost is
+that a single contact can be missed for one frame against a 0.6 s i-frame window, and
+anything actually touching the player is still touching next tick. Rebuilding the grid
+to close that would double the tick's only O(n) structure for a frame nobody can
+perceive.
 
 ## 6. The tick
 
@@ -324,6 +393,13 @@ Ordering notes that matter: the grid is built **once** (step 5) and read by the
 swarm, the aura, the bolts, and contact damage — four consumers, one structure.
 Contact damage resolves *after* movement so an enemy that was pushed into the player
 this tick deals its damage this tick rather than next.
+
+**Death short-circuits the whole thing.** `game.step` returns immediately when the
+player is dead: the clock stops, the field freezes, and the game-over card sits over
+the exact frame that killed you. A crowd still grinding over the body behind the card
+would be claiming the run is continuing. `resetGame` mutates the singleton **in place**
+— every scene component holds a reference to it and reads it imperatively, so handing
+back a fresh object would leave the renderer pointed at the previous run.
 
 **Fixed vs variable timestep:** variable, with the 50 ms clamp. The sim has no
 stiff constraint solver and nothing here needs determinism across machines (no
@@ -359,8 +435,30 @@ Per-population notes:
 
 - **Swarm** — geometry and scale come from `models/registry.ts` per tier. Four tiers
   means four instanced meshes, not one, since they carry different geometry. Colour
-  per instance = tier tint lerped toward white by `flash`.
+  per instance = tier tint lerped toward white by `flash`, **capped at `FLASH_MIX`
+  (0.45)**: the aura hits everything in the ring on the same frame, so a full-white
+  flash turns the crowd around the player into one white mass a quarter of all frames
+  — hiding the player inside it, which is [DESIGN §12](DESIGN.md) rule 1 backwards.
+  The material is white and the tint lives in `instanceColor`, because three
+  *multiplies* the two and a tinted material could only ever darken an instance.
+  Death markers ride in these same meshes, appended after the live enemies of their
+  tier, so capacity is `MAX_ENEMIES + MAX_DEATHS`.
 - **Player** — a single mesh, not instanced; the only actor the camera gets close to.
+  Drawn **twice**: the lit model, plus an unlit silhouette at `renderOrder` 999 with
+  `depthTest: false`. Without the second pass the player is completely hidden by an
+  8-unit prop, or by the crowd standing inside their own aura, and a game whose only
+  verb is "where you stand" cannot have frames where you can't see where you're
+  standing.
+- **AuraRing** — a ground-plane disc plus a rim, both unlit and writing no depth. Flat
+  on the floor rather than a sphere (DESIGN §6.1): the player positions *against* this
+  weapon, so they have to see exactly what is inside it, and a sphere both hides the
+  bodies in the middle and draws an edge that is not the edge that does damage. Unlit
+  because a lit translucent disc darkens away from the key light, making the aura look
+  weaker in a direction where it is not.
+- **Projectiles** — one instanced mesh, unlit, oriented by `atan2(vx, vz)`.
+  Deliberately *not* in `models/registry.ts`: the registry is the list of things a
+  viewer would model, and a 30-centimetre streak that lives under a second is a visual
+  effect wearing a mesh.
 - **Orbs** — one instanced mesh, emissive material, scale pulsed by `age`.
 - **Obstacles** — static; matrices written once in `useLayoutEffect`, never in
   `useFrame`.
@@ -419,6 +517,13 @@ so they run in plain node with no WebGL, no canvas, no mocks:
   and the flicker/overshoot failure modes from §4.3).
 - **Swap-remove** — after a randomised sequence of spawns and kills, live entities
   occupy exactly `[0, N)` and no live entity was lost or duplicated.
+- **Combat** — the aura damages a ring at 2.6 units and not one at 4.0 (the query-ring
+  regression above) and pulses at `AURA_RATE` whether stepped at 60 Hz or 240 · a bolt
+  hits any one enemy exactly once over its whole flight, sweeps a segment rather than
+  testing its endpoint, and spends exactly `BOLT_PIERCE + 1` hits · with both weapons
+  landing on the same bodies in the same tick, kills equal enemies removed and every
+  kill pays XP once · contact damage takes the worst touching enemy and the i-frame
+  gate turns 720 frames of contact into 2 hits.
 - **Progression** — a scripted kill sequence produces a deterministic level and
   unlock set.
 
@@ -445,6 +550,17 @@ so they run in plain node with no WebGL, no canvas, no mocks:
   > something the real game can produce. Anything asserting about the swarm has to
   > clear the field and set the situation up deliberately first, or it is measuring the
   > harness.
+  >
+  > **And it falls into it again from the other side once the game fights back.** Three
+  > M2 checks broke the day M3 shipped: they track specific enemy indices across a
+  > 14-second window, which was safe only while nothing could die, and a kill
+  > swap-removes. The script now silences both weapons for the pathing section and puts
+  > the player in i-frames across every setup teleport — a check about where the crowd
+  > *goes* cannot run in a game that is deleting the crowd, and a minute of movement
+  > checks cannot run in a game that will kill the player halfway through them.
+  >
+  > Both use ordinary sim state (`boltEnabled`, the aura timer, `player.iframe`) rather
+  > than a test-only API, so the harness can never drift from what the game does.
 
 Capture in both goes through **raw CDP `Page.captureScreenshot`** — `page.screenshot()`
 hangs on font-wait in this environment. In headed mode, clip the capture to the
@@ -467,12 +583,13 @@ At `MAX_ENEMIES = 400` the per-tick cost is roughly:
 | Grid rebuild | 400 × 2 passes — negligible |
 | Flow solve | ~16k cells, 10 Hz — <1 ms amortised |
 | Swarm step | 400 × ~9 neighbours — the dominant term, still ~0.2 ms |
-| Combat | 400 aura tests + ~8 bolts × grid query |
-| Matrix writes | ~400 + orbs |
+| Combat | one aura ring query 2/s + ~2 bolts × a few grid queries + one reap pass |
+| Matrix writes | ~400 + deaths + orbs |
 
-**Measured** (M2, headed run on GPU hardware, 400 enemies): **0.10 ms**. `game.stepMs`
-carries the last tick's cost and `npm run verify` asserts it against the 2 ms budget, so
-this number stops being a claim and starts being a regression test.
+**Measured** (headed runs on GPU hardware, 400 enemies): **0.10 ms** at M2, **0.10–0.40
+ms** at M3 with both weapons live. `game.stepMs` carries the last tick's cost and
+`npm run verify` asserts it against the 2 ms budget, so this number stops being a claim
+and starts being a regression test.
 
 The whole tick is comfortably inside 2 ms on a modern laptop, which is the point:
 **there is no performance reason for a worker at this scale**, and adding one would

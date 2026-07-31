@@ -6,23 +6,26 @@
 // Scene components import `game`, read its numbers in `useFrame`, and write matrices — no
 // re-render, no prop drilling, no subscription.
 //
-// M1–M2 own steps 1–6 of the tick. The remaining steps are commented in place so the order is
-// established now and later milestones slot into it rather than renegotiating it.
+// M1–M3 own steps 1–7 and 11–12. Steps 8–10 are commented in place so the order is established now
+// and M4 slots into it rather than renegotiating it.
 
-import { createPlayer, stepPlayer, type Player } from './sim/player';
+import { TUNING } from './config';
+import { createPlayer, isAlive, stepPlayer, type Player } from './sim/player';
 import { createFlow, maybeSolveFlow, type FlowField } from './sim/flow';
 import { makeGrid, type Grid } from './sim/grid';
 import { buildSwarmGrid, createSwarm, spawnEnemy, stepSwarm, type Swarm } from './sim/swarm';
 import { createWaves, stepWaves, type Waves } from './sim/waves';
+import { createCombat, stepCombat, takeContact, type Combat } from './sim/combat';
 import { overlapsObstacle } from './sim/world';
 import { sampleInput, type InputVector } from './input';
+import { useUi } from './store';
 
 /** Longest tick the sim will take. A backgrounded tab hands back a multi-second dt on return, and
  *  without this clamp the first frame after that teleports everything through the geometry. */
 const MAX_DT = 0.05;
 
 export interface Game {
-  /** Seconds of run time. Drives the spawn ramp (M2) and the HUD clock (M3). */
+  /** Seconds of run time. Drives the spawn ramp and the HUD clock. */
   time: number;
   /** Wall-clock cost of the last tick, in ms. ARCHITECTURE §11 budgets the whole tick at ~2 ms and
    *  nothing else measures it; two performance.now() calls a frame is a rounding error by comparison. */
@@ -35,6 +38,15 @@ export interface Game {
   grid: Grid;
   swarm: Swarm;
   waves: Waves;
+  combat: Combat;
+  /** Player level. Pinned at 1 until M4's progression.ts drives it off `combat.xp`. */
+  level: number;
+  /** Run time of the last hit taken, or -1. Drives the HUD vignette (DESIGN §12 rule 4). */
+  lastHitAt: number;
+  /** Bumped by resetGame so run-scoped UI remounts instead of carrying the last run's state. */
+  runId: number;
+  /** Seconds since the last store push. */
+  storeSince: number;
 }
 
 export function createGame(): Game {
@@ -47,19 +59,80 @@ export function createGame(): Game {
     grid: makeGrid(),
     swarm: createSwarm(),
     waves: createWaves(),
+    combat: createCombat(),
+    level: 1,
+    lastHitAt: -1,
+    runId: 0,
+    storeSince: 0,
   };
   // Solve once up front so the very first tick samples a real field rather than a zeroed one — an
   // enemy that spawns before the first solve would otherwise get a zero heading and stand still.
   maybeSolveFlow(g.flow, g.player.x, g.player.z, 1);
+  // Publish once immediately, or the HUD renders "0 / 0 HP" for the 100 ms before the first
+  // throttled push — a first frame that says the player is already dead.
+  syncStore(g);
   return g;
+}
+
+/**
+ * Restart, IN PLACE. Every scene component holds a reference to the `game` singleton and reads it
+ * imperatively in useFrame, so handing back a fresh object would leave the whole renderer pointed at
+ * the previous run. Sub-objects are replaced wholesale rather than zeroed field by field: a reset
+ * that has to remember every field is a reset that will one day forget one.
+ */
+export function resetGame(g: Game): void {
+  const runId = g.runId + 1;
+  g.time = 0;
+  g.stepMs = 0;
+  g.player = createPlayer();
+  g.input.x = 0;
+  g.input.z = 0;
+  g.swarm = createSwarm();
+  g.waves = createWaves();
+  g.combat = createCombat();
+  g.level = 1;
+  g.lastHitAt = -1;
+  g.runId = runId;
+  g.storeSince = 0;
+  // The flow field is kept — its expensive half is the cost field, which never changes — but it must
+  // be re-seeded on the respawned player before anything samples it.
+  maybeSolveFlow(g.flow, g.player.x, g.player.z, 1);
+  syncStore(g);
+}
+
+function syncStore(g: Game): void {
+  useUi.getState().sync({
+    hp: g.player.hp,
+    maxHp: g.player.maxHp,
+    time: g.time,
+    kills: g.combat.kills,
+    xp: g.combat.xp,
+    level: g.level,
+    dead: !isAlive(g.player),
+    lastHitAt: g.lastHitAt,
+    runId: g.runId,
+  });
 }
 
 export function stepGame(g: Game, rawDt: number): void {
   const t0 = performance.now();
   const dt = Math.min(rawDt, MAX_DT);
-  g.time += dt;
 
   const p = g.player;
+
+  // Death freezes the field. The run is over and the card is up (DESIGN §4.3), and a crowd that
+  // keeps grinding over the body behind the card is both distracting and a claim that the run is
+  // still happening. The clock stops here too, so the score on the card is the score you earned.
+  //
+  // No store push on this path: step 12 below already forced one on the frame the player died, and
+  // nothing can change while the field is frozen. Re-pushing would re-render the card 60 times a
+  // second to display numbers that are, by definition, final.
+  if (!isAlive(p)) {
+    g.stepMs = performance.now() - t0;
+    return;
+  }
+
+  g.time += dt;
 
   sampleInput(g.input); //                      1. keyboard + touch -> one normalised vector
   stepPlayer(p, g.input.x, g.input.z, dt); //   2. move, resolve, clamp, face
@@ -67,9 +140,19 @@ export function stepGame(g: Game, rawDt: number): void {
   stepWaves(g.waves, g.swarm, g.time, dt, p.x, p.z); // 4. budget -> ring spawns
   buildSwarmGrid(g.swarm, g.grid); //           5. ONE rebuild, from live positions
   stepSwarm(g.swarm, g.grid, g.flow, dt); //    6. flow + separation + obstacles + integrate
+  stepCombat(g.combat, p, g.swarm, g.grid, dt); // 7. aura pulse; bolts; damage; reap the dead
 
-  //  7. combat.step()       8. orbs.spawn()   9. orbs.step()   10. progression.step() -- M3/M4
-  // 11. player.takeContact()  12. syncStore()                                         -- M3
+  //  8. orbs.spawn()   9. orbs.step()   10. progression.step()                          -- M4
+
+  if (takeContact(g.combat, p, g.swarm, g.grid)) g.lastHitAt = g.time; // 11. contact, i-frame gated
+
+  // 12. syncStore, throttled. The death transition is pushed immediately rather than waiting up to
+  //     100 ms for the next slot — it is the one state change the player is watching for.
+  g.storeSince += dt;
+  if (g.storeSince >= 1 / TUNING.STORE_HZ || !isAlive(p)) {
+    g.storeSince = 0;
+    syncStore(g);
+  }
 
   g.stepMs = performance.now() - t0;
 }
@@ -87,6 +170,7 @@ export const game = createGame();
 if (import.meta.env.DEV) {
   const w = window as unknown as {
     __game: Game;
+    __reset: () => void;
     __spawn: (count: number, tier?: number, radius?: number) => number;
     __overlapsProp: (x: number, z: number, r: number) => boolean;
   };
@@ -94,10 +178,11 @@ if (import.meta.env.DEV) {
   // Exposed so the verification script can ask the arena itself whether a point is inside a prop,
   // rather than keeping its own copy of the 14 boxes that would silently drift out of date.
   w.__overlapsProp = overlapsObstacle;
+  w.__reset = () => resetGame(game);
   w.__spawn = (count, tier = 0, radius = 30) => {
     for (let i = 0; i < count; i++) {
       const a = (i / count) * Math.PI * 2;
-      const r = radius * (0.7 + 0.3 * ((i * 7919) % 100) / 100);
+      const r = radius * (0.7 + (0.3 * ((i * 7919) % 100)) / 100);
       spawnEnemy(game.swarm, game.player.x + Math.cos(a) * r, game.player.z + Math.sin(a) * r, tier);
     }
     return game.swarm.n;

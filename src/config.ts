@@ -61,11 +61,26 @@ export const TUNING = {
   AURA_R: 3.0,
   AURA_DAMAGE: 6,
   AURA_RATE: 2, // pulses per second
+  AURA_FLARE: 0.22, // seconds the ring stays bright after a pulse. Purely visual, but load-bearing:
+  // the aura is silent and has no projectile, so the flare is the ONLY evidence it fired.
   BOLT_DAMAGE: 12,
   BOLT_SPEED: 26,
   BOLT_INTERVAL: 0.55, // seconds between shots
   BOLT_RANGE: 22,
   BOLT_PIERCE: 1, // enemies a bolt passes through
+  BOLT_R: 0.25, // bolt collision radius, added to UNIT_R for the swept-segment test
+
+  // --- hit feedback (DESIGN §12 rule 4) ---
+  FLASH_TIME: 0.12, // enemy hit-flash decay. Long enough to see at 60 fps, short enough that a crowd
+  // under a sustained aura doesn't read as permanently white.
+  FLASH_MIX: 0.45, // how far toward white a fresh hit takes the tier tint. NOT 1.0: the aura hits
+  // everything in the ring on the same frame, so a full-white flash turns the entire crowd around
+  // the player into one white mass a quarter of all frames — which hides the player inside it and
+  // inverts the one rule the look rests on (DESIGN §12 rule 1). At 0.45 the hit still reads and the
+  // tier colour still reads underneath it.
+  DEATH_TIME: 0.26, // scale-punch duration for a death marker, then it is gone
+  MAX_DEATHS: 96, // concurrent death markers. At the late-game kill rate ~40/s × DEATH_TIME is ~11,
+  // so this is slack for a level-up burst rather than a number that binds.
 
   // --- spawn director (DESIGN §7.2) ---
   SPAWN_BASE: 1.5, // enemies/sec at t=0

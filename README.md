@@ -10,9 +10,11 @@ next. Survive the ramp.
 It ships playable with primitive cubes and cones. Drop your own Tripo `.glb` into
 `public/models/`, name it in one file, and the cubes become monsters.
 
-> **Status: M2 (the swarm) done, 2026-07-30.** Drive the character while four tiers of
-> enemies flow in around the props. Nothing can hurt anything yet — combat is M3.
-> 400 enemies cost 0.10 ms of tick at 60 fps. See [ROADMAP.md](docs/ROADMAP.md).
+> **Status: M3 (combat) done, 2026-07-30.** It is a game: the aura grinds the front
+> rank, the Lance fires along the way you're moving, the crowd kills you, and the card
+> offers you another run. What's missing is the reason to keep playing — XP,
+> levels and the unlock table are M4. 400 enemies cost well under half a millisecond
+> of tick at 60 fps. See [ROADMAP.md](docs/ROADMAP.md).
 
 ---
 
@@ -59,6 +61,23 @@ Enemies oscillate between two cells forever. Flooring each side at zero — coun
 neighbours that are genuinely downhill — fixes it, and makes "the swarm can never stall"
 a property you can prove rather than one you hope for.
 
+## The two weapons
+
+Neither has a button. The only verbs are where you stand and which way you last moved.
+
+The **aura** is a ring on the ground that pulses damage twice a second — it rewards
+staying close enough that the front rank is inside it, which is also close enough to
+get hit. The **Lance** fires along your facing, and facing comes from movement, so it
+rewards running *at* the crowd. The optimal line is to retreat while periodically
+turning into the swarm to put a piercing bolt down its length.
+
+The bolt's hit test is worth reading if you ever write one: the obvious "distance to the
+swept segment" hits the same enemy on three consecutive ticks, which spends the whole
+pierce budget on the first target and looks exactly like pierce being broken. Splitting
+it — perpendicular distance to the bolt's infinite *line* decides whether, the foot
+parameter decides when — gives one hit per enemy per bolt from the geometry alone. See
+[ARCHITECTURE.md §4.5](docs/ARCHITECTURE.md).
+
 ## Using your own models
 
 The whole change is one line in [`src/models/registry.ts`](src/models/registry.ts):
@@ -93,7 +112,8 @@ npm run dev        # http://localhost:5182
 | `npm run verify` | drives the game in a **headed** browser and asserts against sim truth |
 
 **Controls:** WASD or arrows on desktop, virtual thumbstick on touch — add `?touch=1`
-to force the thumbstick on a desktop. Attacks are automatic. That's all of them.
+to force the thumbstick on a desktop. Attacks are automatic. Enter, Space or the button
+restarts from the game-over card. That's all of them.
 
 ## Stack
 

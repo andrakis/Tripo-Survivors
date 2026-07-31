@@ -12,6 +12,8 @@ import { CameraRig } from './CameraRig';
 import { GameLoop } from './GameLoop';
 import { Player } from './Player';
 import { Swarm } from './Swarm';
+import { AuraRing } from './AuraRing';
+import { Projectiles } from './Projectiles';
 
 export function Scene() {
   // What the camera follows — written by GameLoop from the player's position each tick. Held as a
@@ -39,7 +41,11 @@ export function Scene() {
 
       {/* GameLoop is the one tick and runs at priority -1, so everything below reads fresh state. */}
       <GameLoop focus={focus} />
+      {/* The aura is drawn before the cast so the transparent disc sorts behind the bodies standing
+          in it — the player has to see what is inside the ring, not a wash over the top of it. */}
+      <AuraRing />
       <Swarm />
+      <Projectiles />
       <Player />
       <CameraRig focus={focus} />
     </>
