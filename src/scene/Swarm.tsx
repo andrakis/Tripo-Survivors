@@ -15,7 +15,8 @@ import { useFrame } from '@react-three/fiber';
 import * as THREE from 'three';
 import { TIERS, TUNING } from '../config';
 import { game } from '../game';
-import { ACTORS, type ActorId } from '../models/registry';
+import { type ActorId } from '../models/registry';
+import { getActor } from '../models/loader';
 import { E_FLASH, E_TIER, E_VX, E_VZ, E_X, E_Z, ENEMY_STRIDE } from '../sim/swarm';
 import { D_AGE, D_TIER, D_X, D_Z, DEATH_STRIDE } from '../sim/combat';
 
@@ -23,7 +24,6 @@ import { D_AGE, D_TIER, D_X, D_Z, DEATH_STRIDE } from '../sim/combat';
 const dummy = new THREE.Object3D();
 /** Likewise for colour — two allocations total, not two per instance per frame. */
 const tint = new THREE.Color();
-const WHITE = new THREE.Color(0xffffff);
 
 /** Instances per tier mesh. Deaths share the mesh, so they share its capacity. */
 const CAPACITY = TUNING.MAX_ENEMIES + TUNING.MAX_DEATHS;
@@ -32,12 +32,17 @@ export function Swarm() {
   const meshes = useRef<THREE.InstancedMesh[]>([]);
   const counts = useRef(new Int32Array(TIERS.length));
 
-  const actors = useMemo(() => TIERS.map((t) => ACTORS[t.actor as ActorId]), []);
-  const geometries = useMemo(() => actors.map((a) => a.primitive()), [actors]);
+  // Resolved actors, not raw registry entries: `getActor` hands back the imported GLB's geometry and
+  // material when one loaded, and the primitive's when it did not (src/models/loader.ts). Swapping a
+  // tier from a cube to a Tripo model changes nothing in this file — that is the property the
+  // registry seam exists to guarantee (MODEL-PIPELINE §2).
+  const actors = useMemo(() => TIERS.map((t) => getActor(t.actor as ActorId)), []);
+  const geometries = useMemo(() => actors.map((a) => a.geometry), [actors]);
   const materials = useMemo(
     () =>
       actors.map(
-        () =>
+        (a) =>
+          a.material ??
           // WHITE, not the tier tint: three multiplies instanceColor into material.color, so a tinted
           // material could only ever darken an instance. The hit flash has to go the other way, so
           // the tint moves into the per-instance colour and the material gets out of its way.
@@ -53,8 +58,7 @@ export function Swarm() {
     for (let t = 0; t < meshes.current.length; t++) {
       const m = meshes.current[t];
       if (!m) continue;
-      tint.set(actors[t].tint);
-      for (let i = 0; i < CAPACITY; i++) m.setColorAt(i, tint);
+      for (let i = 0; i < CAPACITY; i++) m.setColorAt(i, actors[t].flashBase);
       if (m.instanceColor) m.instanceColor.needsUpdate = true;
       m.count = 0;
     }
@@ -81,18 +85,19 @@ export function Swarm() {
       // it anyway; M5's per-enemy variation pass is where this gets revisited.
       const vx = d[b + E_VX];
       const vz = d[b + E_VZ];
-      dummy.rotation.y = Math.atan2(vx, vz);
+      dummy.rotation.y = Math.atan2(vx, vz) + actor.yaw;
       dummy.scale.setScalar(actor.scale);
       dummy.updateMatrix();
 
       const slot = c[tier]++;
       mesh.setMatrixAt(slot, dummy.matrix);
-      // Hit flash: the tier tint lerped toward white by the decaying timer combat wrote. Written
-      // every frame including at flash 0, because the slot an enemy occupies changes as the
+      // Hit flash: `flashBase` lerped toward `flashHot` by the decaying timer combat wrote. Which
+      // pair those are depends on whether a texture loaded — see ResolvedActor in models/loader.ts.
+      // Written every frame including at flash 0, because the slot an enemy occupies changes as the
       // population shifts — leaving a stale colour behind means a random enemy inherits somebody
       // else's flash and appears to be taking damage it isn't.
       const f = d[b + E_FLASH] / TUNING.FLASH_TIME;
-      tint.set(actor.tint).lerp(WHITE, f > 0 ? Math.min(1, f) * TUNING.FLASH_MIX : 0);
+      tint.copy(actor.flashBase).lerp(actor.flashHot, f > 0 ? Math.min(1, f) * TUNING.FLASH_MIX : 0);
       mesh.setColorAt(slot, tint);
     }
 
@@ -112,7 +117,7 @@ export function Swarm() {
       const punch = (1 + 0.55 * Math.sin(Math.PI * t)) * (1 - t * t);
       const flatten = 1 - t;
       dummy.position.set(cm.deaths[b + D_X], actor.yOffset * punch * flatten, cm.deaths[b + D_Z]);
-      dummy.rotation.y = 0;
+      dummy.rotation.y = actor.yaw;
       dummy.scale.set(actor.scale * punch, actor.scale * punch * flatten, actor.scale * punch);
       dummy.updateMatrix();
 
@@ -121,7 +126,7 @@ export function Swarm() {
       // Brightest at the instant of death, fading back to the tier colour as it collapses. Held to
       // the same ceiling as the hit flash: a late-game field can have dozens of these at once, and
       // white ones would out-read the player exactly when the screen is busiest.
-      tint.set(actor.tint).lerp(WHITE, TUNING.FLASH_MIX * (1 - t));
+      tint.copy(actor.flashBase).lerp(actor.flashHot, TUNING.FLASH_MIX * (1 - t));
       mesh.setColorAt(slot, tint);
     }
 

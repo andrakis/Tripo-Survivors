@@ -8,7 +8,9 @@ See [DESIGN.md](DESIGN.md) for the systems these milestones serve and
 [ARCHITECTURE.md](ARCHITECTURE.md) for how they're built.
 
 **Status:** M0–M4 done (M0/M1 2026-07-29, M2 and M3 2026-07-30, M4 and the M4a gameplay
-pass 2026-07-31). M5 (escalation + look) is next.
+pass 2026-07-31). **M6a shipped early** (2026-07-31) because a model existed to import —
+the loader is complete and `grunt.glb` is in the game; the rest of the cast is one
+registry line each once the models exist. M5 (escalation + look) is next.
 
 ---
 
@@ -430,18 +432,69 @@ about the models.
 
 Split into two independently shippable halves.
 
-### 6a — Static GLTF
+### 6a — Static GLTF ✅ code done (2026-07-31) · cast blocked on assets
 
-- [ ] Loader: `GLTFLoader`, contract validation with specific warnings, height-based
-      scale normalisation, **primitive fallback on any failure**
-      ([MODEL-PIPELINE.md §3](MODEL-PIPELINE.md)).
-- [ ] Registry `url` field honoured by every renderer with no other change — verify
-      by swapping one actor and diffing.
-- [ ] `public/models/README.md` — the export contract where a viewer will find it.
-- [ ] Generate and import the full cast: player, four enemy tiers, orb, props.
+- [x] `src/models/loader.ts` — `GLTFLoader`, contract validation with specific warnings,
+      height normalisation, and **primitive fallback on every failure path**
+      ([MODEL-PIPELINE.md §3](MODEL-PIPELINE.md)). Resolves *every* actor, not just the
+      ones with a `url`, so the primitive and GLB paths cannot drift.
+- [x] Registry `url` honoured by every renderer. `Swarm`, `Player`, `Orbs` and
+      `Obstacles` now read `getActor(id)` instead of building geometry themselves;
+      importing an actor is one line in `registry.ts` and nothing else.
+- [x] `yaw` added to the registry — the escape hatch for the one contract rule nothing
+      can detect, a model exported facing −Z.
+- [x] Load gate: `main.tsx` resolves models before the first render, behind a
+      `LOADING MODELS` splash in `index.html`. No cubes-turn-into-monsters pop.
+- [x] `public/models/README.md` — the contract where a viewer will actually look.
+- [x] `npm run verify` extended to 84 browser checks, including a run with the GLB
+      request **aborted** to prove the fallback path end to end.
+- [ ] **The full cast — blocked on assets.** Only `grunt.glb` exists in `public/models/`.
+      The player, runner, brute, elite, orb and prop entries have no `url` and draw their
+      primitives; each is one line once a model exists.
 
 **Done when:** the game runs entirely on generated models, and deleting any one GLB
-degrades to its primitive with a clear console warning rather than breaking.
+degrades to its primitive with a clear console warning rather than breaking. **The second
+half is verified** — the browser run aborts the GLB request and asserts the game still
+comes up, on primitives, with a named warning and no page error. The first half needs the
+other six models.
+
+### What M6a learned
+
+- **The first real Tripo export rendered as a black silhouette, and the cause is a spec
+  default.** glTF's `metallicFactor` defaults to **1.0**, the file omits it, and this
+  stage deliberately has no environment map — so a fully-metallic surface has nothing to
+  reflect and shades to black. The loader forces `metalness = 0` and logs it. This is the
+  single highest-value thing in the milestone for the tutorial: it is invisible in Blender,
+  invisible in every glTF viewer that ships an HDRI, and universal to Tripo output.
+- **Tripo's output is rigged even when you only want a static mesh.** `grunt.glb` carries
+  a skeleton, 16 clips and `JOINTS_0`/`WEIGHTS_0`. Stage 2 takes the bind-pose geometry and
+  strips the skin attributes; the rig is exactly what M6b will bake into a VAT, so nothing
+  is wasted — but the loader has to accept a `SkinnedMesh` where it was looking for a
+  `Mesh`, which is not obvious until it silently finds zero meshes and falls back.
+- **A textured import changes what per-instance colour can mean.** `instanceColor` is
+  multiplied into the material: it can tint an untextured primitive, but it can only
+  *darken* a texture, and the hit flash needs to go the other way. Textured actors now sit
+  at white and flash toward an over-bright colour. The knock-on is a design one — once a
+  tier is imported, its colour belongs to the art, and DESIGN §12 rule 2 rests on
+  silhouette and the locked height table alone.
+- **The model swap cost the facing pip.** It is authored at +Z in the player's group space,
+  so it is both redundant against a model with a readable front and actively wrong the
+  moment `yaw` turns a backward export around — it would swing with the correction. Now
+  rendered only on the primitive.
+- **A one-off shader compile read as a framerate regression.** `holds 60 fps at cap`
+  started failing about one run in three at 54 fps. It was not sustained cost: 400
+  imported models benchmark at a flat 60 (median, min *and* max, over four runs). The
+  harness was reading a **single** 0.5 s `FpsMeter` bucket 2.5 s after 400 instances first
+  appear, and a `MeshStandardMaterial` with three textures compiles a bigger program than
+  a Lambert box — the transient lands inside one bucket. All four fps checks now take the
+  median of three. Worth stating because the instinct was to go optimise something, and
+  the measurement was wrong rather than the game.
+- **A module singleton and HMR do not mix, and the symptom was a ghost.** Editing anything
+  under `sim/` re-evaluated `game.ts` and built a NEW singleton while React Fast Refresh
+  kept the live component tree holding the old one. The visible result was the level-up
+  card sitting there with clicks doing nothing, because `ui/LevelUpChoice` was mutating one
+  `game` and `GameLoop` was stepping another. `game.ts` now accepts its own hot update and
+  immediately invalidates, forcing a full reload. Cost: a reload per sim edit. Worth it.
 
 ### 6b — VAT animation
 

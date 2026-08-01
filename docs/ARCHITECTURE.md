@@ -50,6 +50,7 @@ src/
     boosts.ts            boost pickups on the field + the timers for what is active
     progression.ts       XP curve, weapon grants, the upgrade choice pool
   models/registry.ts   THE TUTORIAL SEAM — see MODEL-PIPELINE.md
+  models/loader.ts     GLB load + contract validation + normalisation, primitive fallback
   store.ts             zustand: human-rate UI state ONLY
   scene/               R3F components. Read state, write matrices. No game logic.
     Scene · Ground · Obstacles · Swarm · Player · Projectiles · Orbs · Orbiter · Boosts ·

@@ -6,14 +6,18 @@
 import { useLayoutEffect, useMemo, useRef } from 'react';
 import * as THREE from 'three';
 import { OBSTACLES } from '../sim/world';
-import { ACTORS } from '../models/registry';
+import { getActor } from '../models/loader';
 
 export function Obstacles() {
   const ref = useRef<THREE.InstancedMesh>(null!);
-  const geometry = useMemo(() => ACTORS.prop.primitive(), []);
+  // Props are the one actor scaled per instance rather than to a fixed height, so an imported prop
+  // is normalised to a unit height by the loader and then stretched to each obstacle's extents
+  // below — exactly as the unit-cube primitive is (MODEL-PIPELINE §4).
+  const actor = useMemo(() => getActor('prop'), []);
+  const geometry = actor.geometry;
   const material = useMemo(
-    () => new THREE.MeshLambertMaterial({ color: ACTORS.prop.tint, flatShading: true }),
-    [],
+    () => actor.material ?? new THREE.MeshLambertMaterial({ color: actor.tint, flatShading: true }),
+    [actor],
   );
 
   useLayoutEffect(() => {

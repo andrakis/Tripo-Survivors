@@ -9,7 +9,7 @@ import { useMemo, useRef } from 'react';
 import { useFrame } from '@react-three/fiber';
 import * as THREE from 'three';
 import { game } from '../game';
-import { ACTORS } from '../models/registry';
+import { getActor } from '../models/loader';
 
 /** Blink rate during i-frames, in visible flashes per second. */
 const BLINK_HZ = 10;
@@ -21,20 +21,20 @@ const GHOST = 0.45;
 export function Player() {
   const group = useRef<THREE.Group>(null!);
   const shell = useRef<THREE.Mesh>(null!);
-  const actor = ACTORS.player;
-  const geometry = useMemo(() => actor.primitive(), [actor]);
-  const material = useMemo(
-    () =>
-      new THREE.MeshLambertMaterial({
-        color: actor.tint,
-        flatShading: true,
-        // Only ever below 1 during i-frames, but the flag has to be set at construction: flipping
-        // `transparent` at runtime forces a shader recompile mid-hit, which is a visible hitch at
-        // the exact moment the player is trying to read what just happened to them.
-        transparent: true,
-      }),
-    [actor],
-  );
+  // The imported GLB's geometry and material when one loaded, the primitive's otherwise — see
+  // src/models/loader.ts. Swapping the player for a Tripo model is one line in the registry.
+  const actor = useMemo(() => getActor('player'), []);
+  const geometry = actor.geometry;
+  const material = useMemo(() => {
+    const m =
+      (actor.material as THREE.MeshLambertMaterial | null)?.clone() ??
+      new THREE.MeshLambertMaterial({ color: actor.tint, flatShading: true });
+    // Only ever below 1 during i-frames, but the flag has to be set at construction: flipping
+    // `transparent` at runtime forces a shader recompile mid-hit, which is a visible hitch at the
+    // exact moment the player is trying to read what just happened to them.
+    m.transparent = true;
+    return m;
+  }, [actor]);
 
   /**
    * The see-through pass: the same silhouette again, unlit, with the depth test off and drawn last.
@@ -78,7 +78,7 @@ export function Player() {
     const p = game.player;
     const g = group.current;
     g.position.set(p.x, 0, p.z);
-    g.rotation.y = p.facing;
+    g.rotation.y = p.facing + actor.yaw;
     // Square-wave blink rather than a fade: the point is to be unmissable, and a fade at 0.6 s
     // reads as a lighting change (DESIGN §12 rule 4).
     const blink = p.iframe > 0 && Math.floor(p.iframe * BLINK_HZ * 2) % 2 === 1;
@@ -110,13 +110,16 @@ export function Player() {
         renderOrder={999}
       />
 
-      {/* Facing pip. The capsule is radially symmetric, so without this the player's heading — which
-          from M3 is the direction the Lance fires — is literally invisible on screen. It sits at +Z
-          because that is the export contract's forward (MODEL-PIPELINE §2), so an imported model
-          with a readable front makes it redundant and it comes out in M6. */}
-      <mesh material={material} position={[0, 0.2, 0.7]}>
-        <boxGeometry args={[0.26, 0.16, 0.5]} />
-      </mesh>
+      {/* Facing pip, ONLY on the primitive. The capsule is radially symmetric, so without this the
+          player's heading — which from M3 is the direction the Lance fires — is literally invisible.
+          An imported model has a readable front of its own, and the pip would also be wrong the
+          moment `yaw` is used to turn a backward export around: it is authored at +Z in group space
+          and would swing with the correction. MODEL-PIPELINE §2 always had it coming out at M6. */}
+      {actor.fallback && (
+        <mesh material={material} position={[0, 0.2, 0.7]}>
+          <boxGeometry args={[0.26, 0.16, 0.5]} />
+        </mesh>
+      )}
 
       <mesh ref={shell} material={shellMaterial} position-y={0.9} visible={false}>
         <sphereGeometry args={[1.35, 20, 14]} />

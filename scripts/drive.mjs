@@ -57,6 +57,30 @@ async function capture(name) {
 const player = () => page.evaluate(() => ({ ...window.__game.player }));
 
 /**
+ * Median of three FpsMeter readings — steady state, not the first bucket after a change.
+ *
+ * scene/FpsMeter.tsx publishes a 0.5-second bucket, and a single read taken shortly after 400
+ * instances appear catches one-off work: the shader compile for their material, the first texture
+ * upload, the first full-size instance buffer. With imported models that transient is big enough to
+ * drag one bucket to ~54 while the sustained rate is a flat 60, so a single sample failed about one
+ * run in three for a reason that has nothing to do with whether the game holds 60 fps.
+ */
+async function steadyFps() {
+  const reads = [];
+  for (let i = 0; i < 3; i++) {
+    await page.waitForTimeout(600);
+    reads.push(
+      await page.evaluate(() => {
+        const m = document.body.innerText.match(/(\d+)\s*fps/);
+        return m ? Number(m[1]) : 0;
+      }),
+    );
+  }
+  reads.sort((a, b) => a - b);
+  return reads[1];
+}
+
+/**
  * Put the player somewhere, at full health and untouchable.
  *
  * From M3 the sim fights back, and a teleport is always the harness setting up a situation — so
@@ -426,10 +450,7 @@ await page.waitForTimeout(2500);
 const full = await swarm();
 check('holds at MAX_ENEMIES', full.n === 400, `${capped} spawned, ${full.n} live`);
 check('the whole tick stays inside its 2 ms budget at cap', full.stepMs < 2, `${full.stepMs.toFixed(2)} ms`);
-const capFps = await page.evaluate(() => {
-  const m = document.body.innerText.match(/(\d+)\s*fps/);
-  return m ? Number(m[1]) : null;
-});
+const capFps = await steadyFps();
 check('holds 60 fps at cap', capFps !== null && capFps >= 55, `${capFps} fps with 400 enemies`);
 
 // --- 9. combat (M3) ---------------------------------------------------------------------------------
@@ -981,10 +1002,7 @@ check(
   loadedOrbs.stepMs < 2 && loadedOrbs.orbs >= 2000,
   `${loadedOrbs.stepMs.toFixed(2)} ms, ${loadedOrbs.orbs} orbs`,
 );
-const orbFps = await page.evaluate(() => {
-  const m = document.body.innerText.match(/(\d+)\s*fps/);
-  return m ? Number(m[1]) : null;
-});
+const orbFps = await steadyFps();
 check('holds 60 fps with a full orb field', orbFps !== null && orbFps >= 55, `${orbFps} fps`);
 
 // --- 12b. the dash ------------------------------------------------------------------------------
@@ -1405,11 +1423,85 @@ await page.evaluate(() => window.__spawn(400, 2, 22)); // brutes: 60 hp, so the 
 await page.waitForTimeout(2000);
 const loaded = await combat();
 check('the whole tick stays inside its 2 ms budget with combat at cap', loaded.stepMs < 2, `${loaded.stepMs.toFixed(2)} ms at ${loaded.n} enemies`);
-const combatFps = await page.evaluate(() => {
-  const m = document.body.innerText.match(/(\d+)\s*fps/);
-  return m ? Number(m[1]) : null;
-});
+const combatFps = await steadyFps();
 check('holds 60 fps with combat at cap', combatFps !== null && combatFps >= 55, `${combatFps} fps`);
+
+// --- 15. imported models (M6a) ----------------------------------------------------------------------
+// The registry seam: what resolved to a GLB, what fell back, and — the milestone's actual acceptance
+// criterion — that a missing file degrades to the primitive rather than breaking anything.
+const models = await page.evaluate(() => window.__models());
+check(
+  'the GLB named in the registry is loaded and instanced',
+  models.grunt && models.grunt.fallback === false && models.grunt.textured === true,
+  `grunt: ${models.grunt?.fallback === false ? 'loaded' : 'FELL BACK'}${models.grunt?.textured ? ', textured' : ''}`,
+);
+check(
+  'every actor without a url is on its primitive, with no warning',
+  ['player', 'runner', 'brute', 'elite', 'orb', 'prop'].every((id) => models[id]?.fallback === true),
+  Object.entries(models)
+    .map(([id, m]) => `${id}:${m.fallback ? 'prim' : 'glb'}`)
+    .join(' '),
+);
+
+// The whole point of the fallback rule (MODEL-PIPELINE §1): break the asset, keep the game.
+// A fresh page with the GLB request aborted — the same thing a viewer sees after a typo in the
+// filename, except reproducible.
+{
+  const brokenPage = await browser.newPage({ viewport: { width: 1280, height: 800 } });
+  const brokenLog = [];
+  brokenPage.on('console', (m) => brokenLog.push(`${m.type()}: ${m.text()}`));
+  brokenPage.on('pageerror', (e) => brokenLog.push(`pageerror: ${e.message}`));
+  await brokenPage.route('**/models/*.glb', (route) => route.abort());
+  await brokenPage.goto(url, { waitUntil: 'domcontentloaded' });
+  await brokenPage.waitForFunction(() => !!document.querySelector('canvas') && !!window.__game, {
+    timeout: 30000,
+  });
+  await brokenPage.waitForTimeout(1200);
+
+  const degraded = await brokenPage.evaluate(() => ({
+    models: window.__models(),
+    n: window.__game.swarm.n,
+    hp: window.__game.player.hp,
+    canvas: !!document.querySelector('canvas'),
+  }));
+  check(
+    'a missing GLB degrades to the primitive instead of breaking the game',
+    degraded.models.grunt.fallback === true && degraded.canvas && degraded.hp === 100,
+    `grunt on primitive, ${degraded.n} enemies live, canvas up`,
+  );
+  check(
+    'and says exactly which file failed and what happened',
+    brokenLog.some((l) => l.includes('grunt.glb') && l.includes('falling back')),
+    brokenLog.find((l) => l.includes('grunt.glb'))?.slice(0, 96) ?? '(no warning logged)',
+  );
+  check(
+    'a broken asset raises no page error at all',
+    !brokenLog.some((l) => l.startsWith('pageerror')),
+    brokenLog.filter((l) => l.startsWith('pageerror')).join(' | ') || 'none',
+  );
+  await brokenPage.close();
+}
+
+// 400 textured models is a different render load from 400 boxes — 807 tris each, a normal map and a
+// metallic-roughness map. This is the check that importing the cast does not cost the framerate.
+await teleport(-90, 90);
+await page.evaluate(() => window.__spawn(400, 0, 26));
+await page.waitForTimeout(2000);
+const modelLoad = await combat();
+check(
+  'the tick holds its budget with 400 imported models on screen',
+  modelLoad.stepMs < 2,
+  `${modelLoad.stepMs.toFixed(2)} ms at ${modelLoad.n} enemies`,
+);
+const modelFps = await steadyFps();
+check(
+  'holds 60 fps with 400 imported models',
+  modelFps !== null && modelFps >= 55,
+  `${modelFps} fps, ~${(400 * 807).toLocaleString()} tris`,
+);
+await page.evaluate(() => {
+  window.__game.swarm.n = 0;
+});
 
 // --- evidence ---------------------------------------------------------------------------------------
 // Open ground south of the Keep, which sits dead ahead with its two outbuildings flanking it — the

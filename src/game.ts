@@ -35,6 +35,7 @@ import {
   type Progression,
 } from './sim/progression';
 import { overlapsObstacle } from './sim/world';
+import { actorReport } from './models/loader';
 import { sampleInput, type InputVector } from './input';
 import { useUi, type OfferCard } from './store';
 
@@ -240,6 +241,21 @@ export function stepGame(g: Game, rawDt: number): void {
 /** The one live game. */
 export const game = createGame();
 
+// Force a FULL RELOAD when this module — or anything under sim/ that reaches it — is hot-updated.
+//
+// `game` is a module singleton and every scene component captures it. A hot update re-evaluates this
+// file and builds a NEW singleton, while React Fast Refresh keeps the existing component tree alive
+// holding the old one. The two halves of the game then diverge silently, and the symptom is
+// bewildering: the level-up card sits there and clicking a card does nothing, because the UI is
+// mutating one `game` and `GameLoop` is stepping another.
+//
+// Accepting here and immediately invalidating is Vite's documented way to say "this module cannot be
+// hot-swapped" — the update stops propagating at this file and the page reloads instead. It costs a
+// reload per sim edit during development, which is the correct price for never debugging a ghost.
+if (import.meta.hot) {
+  import.meta.hot.accept(() => import.meta.hot!.invalidate());
+}
+
 // Debug seam, dev builds only: scripts/drive.mjs reads sim truth through this rather than trying to
 // infer the player's position from pixels. Stripped from the production bundle by the DEV guard.
 //
@@ -255,6 +271,7 @@ if (import.meta.env.DEV) {
     __overlapsProp: (x: number, z: number, r: number) => boolean;
     __grantXp: (amount: number) => number;
     __choose: (index: number) => boolean;
+    __models: () => Record<string, { fallback: boolean; textured: boolean; url?: string }>;
   };
   w.__game = game;
   // Levels 2..12 are minutes of real play apart by design, and a verification run that has to earn
@@ -276,6 +293,9 @@ if (import.meta.env.DEV) {
   // Exposed so the verification script can ask the arena itself whether a point is inside a prop,
   // rather than keeping its own copy of the 14 boxes that would silently drift out of date.
   w.__overlapsProp = overlapsObstacle;
+  // Which actors resolved to a GLB and which fell back to their primitive. The verification run
+  // asserts on this rather than trying to tell a monster from a cube in a screenshot.
+  w.__models = actorReport;
   w.__reset = () => resetGame(game);
   w.__spawn = (count, tier = 0, radius = 30) => {
     for (let i = 0; i < count; i++) {

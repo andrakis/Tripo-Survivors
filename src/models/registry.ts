@@ -4,9 +4,9 @@
 // an actor looks like — so using your own model is one line here plus a file in public/models/,
 // with no edit anywhere in scene/, sim/, or ui/.
 //
-// `url` is honoured from M6 onward; today only `primitive` is read. The primitive is not a
-// placeholder to be deleted later — it stays forever as the fallback when a GLB is missing or
-// violates the export contract, so a mistake degrades to a working game plus a console warning.
+// `url` is honoured from M6a onward. The primitive is not a placeholder to be deleted later — it
+// stays forever as the fallback when a GLB is missing or violates the export contract, so a mistake
+// degrades to a working game plus a console warning (src/models/loader.ts).
 
 import * as THREE from 'three';
 import { COLORS } from '../config';
@@ -14,7 +14,7 @@ import { COLORS } from '../config';
 export interface ActorModel {
   /** Stage 1: the primitive that ships today, and the fallback forever after. */
   primitive: () => THREE.BufferGeometry;
-  /** Stage 2 (M6): drop a GLB in public/models/ and name it here. That is the whole change. */
+  /** Stage 2 (M6a): drop a GLB in public/models/ and name it here. That is the whole change. */
   url?: string;
   /** Target height in world units. Imported models are normalised to this — see MODEL-PIPELINE §4. */
   height: number;
@@ -22,7 +22,22 @@ export interface ActorModel {
   scale: number;
   /** Lift so the model's feet sit at y = 0. */
   yOffset: number;
-  /** Instance tint. Kept even with a textured model — it drives the hit flash. */
+  /**
+   * Extra yaw in radians, added to the facing every renderer derives from movement.
+   *
+   * The escape hatch for MODEL-PIPELINE §3's "facing +Z" requirement — the most common and most
+   * confusing import bug, because a model exported facing −Z runs backward and nothing else looks
+   * wrong. `Math.PI` turns one around without opening Blender. Re-exporting is still the better fix;
+   * this is here so a viewer is never blocked on doing it.
+   */
+  yaw?: number;
+  /**
+   * Instance tint: the primitive's colour, and the base its hit flash lerps from.
+   *
+   * A TEXTURED import ignores it — per-instance colour multiplies into the material, so tinting a
+   * texture would stain it. Those flash from white toward an over-bright colour instead. See
+   * `ResolvedActor` in src/models/loader.ts and MODEL-PIPELINE §2.1.
+   */
   tint: number;
 }
 
@@ -38,6 +53,9 @@ export const ACTORS: Record<ActorId, ActorModel> = {
   },
   grunt: {
     primitive: () => new THREE.BoxGeometry(0.8, 1.4, 0.8),
+    // THE ONE LINE. Delete it (or rename the file) and the grunt is a green box again, with a
+    // warning in the console — nothing else in the codebase changes either way.
+    url: '/models/grunt.glb',
     height: 1.4,
     scale: 1.0,
     yOffset: 0.7,

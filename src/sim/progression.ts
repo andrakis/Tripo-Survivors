@@ -267,10 +267,19 @@ function resolveLevels(pr: Progression, l: Loadout, time: number): boolean {
     if (auto) {
       auto.apply(l);
       announce(pr, l, auto.label, time);
-    } else {
-      // Pauses the run until chooseUpgrade clears it.
-      pr.offer = rollOffer(pr, l);
+      continue;
     }
+
+    const offer = rollOffer(pr, l);
+    // An empty offer would be a DEADLOCK, not a missing feature: `isPaused` is `offer !== null`, so
+    // a zero-length offer freezes the sim while ui/LevelUpChoice.tsx renders nothing to click. It
+    // cannot happen with today's pool (every entry but Fire rate is unconditional), but the failure
+    // is unrecoverable and silent, and the guard is one line.
+    if (offer.length === 0) {
+      announce(pr, l, 'Level up', time);
+      continue;
+    }
+    pr.offer = offer; // pauses the run until chooseUpgrade clears it
   }
   return any;
 }

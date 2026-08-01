@@ -14,7 +14,7 @@ import { useFrame } from '@react-three/fiber';
 import * as THREE from 'three';
 import { ORB_GRADES, orbGrade, TUNING } from '../config';
 import { game } from '../game';
-import { ACTORS } from '../models/registry';
+import { getActor } from '../models/loader';
 import { O_AGE, O_VALUE, O_X, O_Z, ORB_STRIDE } from '../sim/orbs';
 
 const dummy = new THREE.Object3D();
@@ -27,14 +27,18 @@ const BOB_RATE = 3.1;
 
 export function Orbs() {
   const mesh = useRef<THREE.InstancedMesh>(null!);
-  const actor = useMemo(() => ACTORS.orb, []);
-  const geometry = useMemo(() => actor.primitive(), [actor]);
+  const actor = useMemo(() => getActor('orb'), []);
+  const geometry = actor.geometry;
   const material = useMemo(
     // WHITE, with the grade colour in instanceColor: three MULTIPLIES the two, so a tinted material
     // could only ever darken an instance and the gold and magenta grades would never reach their
     // colour. Same reasoning as the swarm's material (ARCHITECTURE §7).
-    () => new THREE.MeshBasicMaterial({ color: 0xffffff }),
-    [],
+    //
+    // An imported orb keeps its own material — but the grade colour then multiplies its texture,
+    // which is the intended behaviour here: the four grades ARE the readout, and a viewer who
+    // replaces the orb is replacing the shape, not the colour language (DESIGN §12 rule 3).
+    () => actor.material ?? new THREE.MeshBasicMaterial({ color: 0xffffff }),
+    [actor],
   );
 
   // The colour write is what allocates `instanceColor` — three creates it lazily on the first

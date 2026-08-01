@@ -189,6 +189,23 @@ describe('the level-up protocol', () => {
     expect(w.prog.totalXp).toBe(100);
   });
 
+  it('never pauses on an empty offer', () => {
+    // The deadlock guard. `isPaused` is `offer !== null`, so a zero-length offer would freeze the
+    // sim with nothing on screen to click — unrecoverable, and silent. Simulated by making every
+    // upgrade unavailable, which today's pool cannot do on its own.
+    const w = world();
+    const saved = UPGRADES.map((u) => u.available);
+    UPGRADES.forEach((u) => (u.available = () => false));
+    try {
+      grant(w, xpToNext(1));
+      expect(w.prog.level).toBe(2);
+      expect(isPaused(w.prog)).toBe(false);
+      expect(w.prog.lastLevelAt).toBeGreaterThanOrEqual(0); // and it still announced the level
+    } finally {
+      UPGRADES.forEach((u, i) => (u.available = saved[i]));
+    }
+  });
+
   it('ignores an out-of-range pick rather than quietly applying the first card', () => {
     // This is wired straight to a keypress. Treating `4` as card 1 would spend a level-up on
     // something the player did not read.

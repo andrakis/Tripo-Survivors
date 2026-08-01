@@ -13,9 +13,9 @@ and the staged path from "primitive cubes" to "animated crowd of 400".
 
 | Stage | What renders | Status |
 |---|---|---|
-| **1 — Primitives** | `THREE.BoxGeometry` etc., built in code | v1, ships now |
-| **2 — Static GLTF** | Your Tripo `.glb`, instanced, unanimated | [ROADMAP M6](ROADMAP.md) |
-| **3 — VAT** | Your `.glb`, animated, at full crowd count | M6, ported from Breach |
+| **1 — Primitives** | `THREE.BoxGeometry` etc., built in code | ships, and is the permanent fallback |
+| **2 — Static GLTF** | Your Tripo `.glb`, instanced, unanimated | ✅ [M6a](ROADMAP.md), `src/models/loader.ts` |
+| **3 — VAT** | Your `.glb`, animated, at full crowd count | M6b, ported from Breach |
 
 Each stage is a strict superset of the last, and **stage 1 is always the fallback**.
 If a GLB is missing, fails to load, or violates the contract, the game logs a warning
@@ -39,11 +39,15 @@ export interface ActorModel {
   primitive: () => THREE.BufferGeometry;
   /** Stage 2: drop a GLB in public/models/ and name it here. That's the whole change. */
   url?: string;
-  /** Uniform scale applied after import-normalisation (see §4). */
+  /** Target height in world units. Imported models are normalised to this (see §4). */
+  height: number;
+  /** Uniform scale applied after import-normalisation. */
   scale: number;
   /** Lift so the model's feet sit at y = 0. */
   yOffset: number;
-  /** Instance tint. Kept even with a textured model — it drives the hit flash. */
+  /** Extra yaw, for a model exported facing the wrong way. See §3. */
+  yaw?: number;
+  /** Instance tint. Drives the primitive's colour AND its hit flash — see below. */
   tint: number;
 }
 
@@ -71,6 +75,26 @@ Drop `grunt.glb` in `public/models/`, add the `url`, reload. Nothing in `scene/`
 `sim/`, or `ui/` changes — that's the property the registry exists to guarantee, and
 it should be verified whenever a renderer is touched.
 
+Renderers read a **resolved** actor (`getActor(id)` in `src/models/loader.ts`), never the
+registry entry directly. That record carries the geometry and material to draw with —
+the GLB's when one loaded, the primitive's when it did not — so the two paths cannot
+drift apart in a renderer that only remembered to handle one of them.
+
+### 2.1 The hit flash, textured vs not
+
+One thing genuinely differs between the paths, and it is worth understanding because it
+is the only place an imported model changes how the game *reads*.
+
+Per-instance colour is **multiplied** into the material. An untextured primitive can
+therefore carry its tier tint in `instanceColor` and flash by lerping toward white. A
+textured model cannot: tinting it green would stain the texture green, and multiplying by
+white does nothing at all. So a textured actor sits at white — its texture, untouched —
+and flashes toward an **over-bright** colour, which multiplies to an actual brightening.
+
+The practical consequence for [DESIGN §12](DESIGN.md) rule 2: once you import a tier, its
+*colour* is your art's, not the palette's. Silhouette and the locked height table are what
+keep the tier hierarchy readable after that.
+
 ## 3. The export contract
 
 A GLB must satisfy all of these to be instanced. Tripo's default output satisfies
@@ -81,11 +105,21 @@ most of them already; the ones that need attention are marked ⚠.
 | **Single mesh** | One `InstancedMesh` draws one geometry. A multi-mesh GLB would need one draw call per part per instance — the thing instancing exists to avoid. |
 | **Single material** | Same reason. Merge in Blender if your export has several. |
 | **Y-up** | Three.js convention. glTF is Y-up by spec, so this is usually free. |
-| ⚠ **Feet at y ≈ 0** | The sim positions actors on the ground plane. A model authored around its centre sinks half-underground; correct it in Blender or with `yOffset`. |
-| ⚠ **Facing +Z** | Facing is derived from movement, and the renderer rotates by `atan2` assuming the model looks down +Z. A model facing −Z runs backward — the most common and most confusing import bug. |
+| ⚠ **Facing +Z** | Facing is derived from movement, and the renderer rotates by `atan2` assuming the model looks down +Z. A model facing −Z runs backward — the most common and most confusing import bug, and **the only contract rule nothing can detect for you**. The escape hatch is `yaw: Math.PI` in the registry; re-exporting is the better fix. |
 | **No Draco compression** | Keeps the loader path minimal (no decoder to configure). Breach *does* use Draco for its static structures, so it's a supported extension later — just not the default here. |
 | **Reasonable triangle count** | See §5. |
 | **Texture baked into the GLB** | Embedded, not referenced as external files. Tripo exports this way by default. |
+
+**Two things the loader fixes rather than demands**, because both are free to correct and
+both make a terrible first experience:
+
+- **Placement.** The geometry is centred on import, so a model authored around its centre
+  does not sink half-underground. An `info` line still reports it, because a pivot that
+  isn't at the feet usually means the source file needs attention before it is rigged.
+- **Metalness.** glTF's default `metallicFactor` is **1.0**, and this stage has no
+  environment map for a metal surface to reflect — so a Tripo export that omits the factor
+  renders as a **black silhouette**. This was the very first thing the real `grunt.glb` hit.
+  The loader forces `metalness = 0` and says so.
 
 ### 3.1 Verifying an export
 
@@ -95,20 +129,26 @@ error. Beyond that, the loader validates the contract at load time and warns
 specifically:
 
 ```
-[models] grunt.glb: 3 meshes found, expected 1 — falling back to primitive.
-[models] grunt.glb: bounds min.y = -0.83, expected ≈ 0 — model will sink. Set yOffset or re-export.
-[models] brute.glb: 184,022 triangles at 400 instances — see docs/MODEL-PIPELINE.md §5.
+[models] grunt.glb: loaded for 'grunt' — 807 tris, normalised to 1.4 u tall, textured.
+[models] grunt.glb: metalness 1 forced to 0 — the stage has no environment map to reflect.
+[models] grunt.glb: 3 meshes found, expected 1 — falling back to the primitive. One
+         InstancedMesh draws one geometry; join the parts in Blender (Ctrl+J) and re-export.
+[models] brute.glb: 184,022 triangles, over the 20,000 ceiling for 'brute' — see
+         docs/MODEL-PIPELINE.md §5. It will still run; decimate if the framerate drops.
 ```
 
 Naming the file, the measured value, the expected value, and the fix. A tutorial
-viewer hitting one of these should not need to ask anyone what it means.
+viewer hitting one of these should not need to ask anyone what it means. `warn` means you
+are looking at a primitive; `info` means it loaded and something was adjusted.
 
 ## 4. Scale normalisation
 
 Generated models arrive at wildly inconsistent sizes — Tripo has no idea your grunt
-is meant to be 1.2 units tall. On load the model's bounding box is measured and a
-uniform scale applied to bring its **height** to the tier's target, then `scale` in
-the registry multiplies that as an artistic override.
+is meant to be 1.4 units tall. On load the model's bounding box is measured, a uniform
+scale applied to bring its **height** to the tier's target, and the geometry centred on
+the origin so it lands in the same convention the primitives already use (which is what
+keeps `yOffset` meaning one thing for both paths). `scale` in the registry then multiplies
+that as an artistic override.
 
 | Actor | Target height (world units) |
 |---|---|
@@ -118,7 +158,7 @@ the registry multiplies that as an artistic override.
 | Brute | 2.6 |
 | Elite | 4.5 |
 | Orb | 0.45 |
-| Prop | measured per instance, 3–8 |
+| Prop | 1.0, then stretched to each obstacle's extents per instance |
 
 Normalising on height rather than on the longest axis is deliberate: a model with a
 weapon held out sideways has a wide bounding box, and longest-axis normalisation
