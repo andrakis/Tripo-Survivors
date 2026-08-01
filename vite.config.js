@@ -46,11 +46,11 @@ export default defineConfig({
   server: {
     port: 5182,
     host: true,
-    allowedHosts: ['localhost', '.code.stargazer.onl', '.code.home.stargazer.onl'],
+    allowedHosts: ['localhost', '.code.stargazer.onl', '.code.home.stargazer.onl', 'survive.jaithe.dev'],
   },
   preview: {
     port: 4182,
-    allowedHosts: ['localhost', '.code.stargazer.onl', '.code.home.stargazer.onl'],
+    allowedHosts: ['localhost', '.code.stargazer.onl', '.code.home.stargazer.onl', 'survive.jaithe.dev'],
   },
   build: {
     target: 'es2022',
