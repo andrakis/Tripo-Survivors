@@ -379,6 +379,34 @@ describe('death', () => {
   });
 });
 
+describe('the level-up burst', () => {
+  it('is a different signal from an aura pulse, not a brighter one', () => {
+    // The bug M5's feedback pass found: `announce` used to set `auraFlare`, which the aura itself
+    // sets to 1 twice a second. The "full aura flare" DESIGN §12 promises as the world-side half of
+    // a level-up was therefore pixel-for-pixel an ordinary pulse, and the level-up had no signal in
+    // the world at all. These two fields must stay independent, and a pulse must never write burst.
+    const { p, s, g, c } = scene();
+    c.auraTimer = 0;
+    tick(c, p, s, g);
+    expect(c.auraFlare).toBeGreaterThan(0.9); // the pulse fired...
+    expect(c.auraBurst).toBe(0); // ...and did not claim to be a level-up
+  });
+
+  it('decays over AURA_BURST, and outlasts a pulse flare', () => {
+    const { p, s, g, c } = scene();
+    c.auraBurst = 1;
+    // Half of AURA_BURST, which is more than a whole AURA_FLARE — the point of the longer window is
+    // that the burst is still visible after the pulse it landed on has gone.
+    const half = TUNING.AURA_BURST / 2;
+    expect(half).toBeGreaterThan(TUNING.AURA_FLARE);
+    for (let t = 0; t < half; t += DT) tick(c, p, s, g);
+    expect(c.auraBurst).toBeGreaterThan(0.35);
+    expect(c.auraBurst).toBeLessThan(0.65);
+    for (let t = 0; t < TUNING.AURA_BURST; t += DT) tick(c, p, s, g);
+    expect(c.auraBurst).toBe(0);
+  });
+});
+
 describe('contact damage', () => {
   it('costs the WORST touching enemy, not the first one the grid walk reaches', () => {
     const { p, s, g } = scene();
@@ -410,6 +438,30 @@ describe('contact damage', () => {
     // 1 s of contact at 0.6 s of invulnerability per hit is 2 hits, not 720.
     expect(hits).toBe(2);
     expect(p.hp).toBe(TUNING.PLAYER_HP - 2 * TIERS[0].contact);
+  });
+
+  it('records what the hit cost, so the vignette can be proportional to it', () => {
+    // M5's feedback pass. A runner hits for 4 and an elite for 30, and until `lastContact` existed
+    // both drew exactly the same full-screen flash — the channel DESIGN §12 rule 4 reserves for "you
+    // are being hurt" said nothing about how badly, which is the half that changes what you do next.
+    const { p, s, g } = scene();
+    const c = createCombat();
+    spawnEnemy(s, 0.5, 0, 1); // runner, 4
+    buildSwarmGrid(s, g);
+    expect(takeContact(c, p, s, g)).toBe(true);
+    expect(c.lastContact).toBe(TIERS[1].contact);
+
+    // A hit that does NOT land must not overwrite it: the i-frame window is 0.6 s and the vignette
+    // is still playing, so a rejected contact rewriting the field would rescale a flash mid-fade.
+    p.hp = TUNING.PLAYER_HP;
+    spawnEnemy(s, -0.5, 0, 3); // elite, 30 — but the i-frames from the runner are still up
+    buildSwarmGrid(s, g);
+    expect(takeContact(c, p, s, g)).toBe(false);
+    expect(c.lastContact).toBe(TIERS[1].contact);
+
+    p.iframe = 0;
+    expect(takeContact(c, p, s, g)).toBe(true);
+    expect(c.lastContact).toBe(TIERS[3].contact);
   });
 
   it('does not reach an enemy that is not touching', () => {

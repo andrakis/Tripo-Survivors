@@ -3,9 +3,11 @@
 The visual target, and the rules that keep it working when someone drops in art we
 didn't make.
 
-**Status:** v1, 2026-07-29. Refines [DESIGN.md §3 pillar 3](DESIGN.md) and
-[§12 readability](DESIGN.md). Asset-side requirements live in
-[MODEL-PIPELINE.md](MODEL-PIPELINE.md).
+**Status:** v1.1, 2026-08-01 (M5's look pass). Refines [DESIGN.md §3 pillar 3](DESIGN.md)
+and [§12 readability](DESIGN.md). Asset-side requirements live in
+[MODEL-PIPELINE.md](MODEL-PIPELINE.md). Every rule below that can be checked
+mechanically is checked in `src/readability.test.ts`, so the palette cannot drift back
+without a red build.
 
 ---
 
@@ -42,10 +44,25 @@ never competes for attention with the thing the tutorial is trying to show off.
    band of cool desaturated greys and blue-greens. All chroma budget is spent on
    actors, orbs, and the aura.
 
-4. **Fog does the depth work.** Exponential fog matched exactly to the ground colour,
-   tuned so the spawn ring is at the edge of visibility. Enemies fade *in* as they
-   approach rather than popping at a frustum boundary — which also means the arena's
-   edges never need to be modelled.
+4. **Fog does the depth work.** **Linear** fog matched exactly to the ground colour,
+   with its near plane placed just beyond the camera's own standoff from the player.
+   Enemies fade *in* as they approach rather than popping at a frustum boundary — which
+   also means the arena's edges never need to be modelled.
+
+   > **Changed in M5, from exponential to linear.** Two reasons, and the first is the
+   > important one. Exponential fog has no near plane, so the player sat permanently
+   > ~23% blended into the fog colour — a standing tax on the one thing the palette's
+   > first rule says must be the brightest pixel on screen. A near plane at 40 units,
+   > against the rig's 36.8, leaves the player and the crowd fighting them exactly
+   > unfogged.
+   >
+   > The second is that "tuned so the spawn ring is at the edge of visibility" cannot be
+   > satisfied literally, and it took measuring to see why. The ring is one *ground*
+   > distance (32.2 units) but many *camera* distances: with a fixed 45 degree rig the
+   > near arc is 26.7 units away — closer to the camera than the player is — while the
+   > far arc is 63.7. So the fade is aimed at the **far** arc, which is the direction the
+   > player is usually retreating away from and has the most time to read; the near arc
+   > is left to the bottom edge of the frame, which it is about to leave anyway.
 
 5. **Fixed camera angle, fixed yaw.** ~45° down, no rotation, ever
    ([ARCHITECTURE.md §9](ARCHITECTURE.md)). Every model is therefore seen from
@@ -63,24 +80,36 @@ never competes for attention with the thing the tutorial is trying to show off.
 | Ground | `#2a2f38` | Cool near-black; the darkest thing on screen |
 | Ground grid | `#3d4453` | Faint 8-unit lines — motion reference, not decoration |
 | Ground, out-of-bounds band | `#1c2027` | Visibly darker so being cornered reads early |
-| Props | `#6b6f7a` | Neutral grey, flat-shaded, no tint variation |
+| Props | `#4e535d` | Neutral grey, flat-shaded, no tint variation |
 | Fog | `#2a2f38` | **Exactly** the ground colour — the horizon must vanish |
 | Player | `#ffe9a8` | Warm, bright, highest value on screen |
 | Grunt | `#7fd15a` | Green |
 | Runner | `#5ad1c8` | Cyan, thin silhouette |
-| Brute | `#d1585a` | Red, wide silhouette |
-| Elite | `#c45ad1` | Violet, huge |
+| Brute | `#bd6265` | Red, wide silhouette — desaturated, see below |
+| Elite | `#b06ebb` | Violet, huge — desaturated, see below |
 | XP orb | `#8fe3ff` | Emissive pale blue |
 | Aura | `#ffd166` at 0.18 alpha | Additive ground disc, brightens on pulse |
 | Bolt | `#ffe9a8` | Emissive, matches the player — reads as *yours* |
 | Damage vignette | `#ff3b30` | Full-screen flash on player hit |
 
-Two rules constrain any future addition to this table:
+Three rules constrain any future addition to this table:
 
 - **The player is always the highest-value pixel on screen.** If an imported model
   outshines them, its registry tint is wrong.
 - **No enemy tier shares a hue.** Colour is the backup channel when an imported
   model's silhouette doesn't match the tier it was assigned to.
+- **The bigger the tier, the less chroma it may spend.** Added in M5, because the first
+  two rules were both satisfied and the frame was still wrong. Attention is *area ×
+  chroma*, not value alone: a 4.5-unit elite at full saturation out-shouts a 1.7-unit
+  player who is strictly brighter than it. The brute and the elite are therefore
+  desaturated against their v1 values; the grunt and the runner keep all of theirs,
+  because they are small and colour is the only channel they have.
+
+M5 also darkened the props from `#6b6f7a` to `#4e535d`. At the old value they sat inside
+the cast's own value range — luminance 111 against the brute's 114 — while covering
+several times the screen area of any actor, so the first thing the eye found in a still
+frame was a rock. The ladder the stage rule always described is ground < props < every
+actor, and it is a real gap now rather than three points.
 
 ## Silhouette hierarchy
 
@@ -99,6 +128,18 @@ of what the source model looks like.
 The player is deliberately mid-height — not the biggest thing on screen — so an elite
 entering the frame is immediately legible as a problem.
 
+The ladder is **three rungs, not four**: the grunt and the runner are seven percent apart
+in height and were never meant to be told apart by size — they are separated by *width*
+and hue, and "small" is one rung containing two tiers. Anything that scales an actor
+(M5's per-enemy jitter, an imported model's normalisation) has to stay inside
+small → brute → elite, and those are the gaps `src/readability.test.ts` guards.
+
+**Props are capped at 4.6 units.** The camera looks down at exactly 45 degrees, so a prop
+of height *h* hides the ground for *h* units directly behind it. The 8-unit pillars M0
+placed threw a six-unit blind spot each — about five ranks of enemies you could not see —
+and the Pillar Ring was four of them in a cluster. The see-through pass M3 added answers
+this for the *player*; nothing answers it for the crowd except shorter props.
+
 ## Motion and feedback
 
 Feel comes almost entirely from motion, because the geometry is too simple to carry
@@ -113,11 +154,26 @@ it. Every effect below is cheap and framerate-independent.
 | Orb pickup | Orb accelerates in, then a brief XP-bar flash |
 | Level up | Screen-shake 0.25 s, toast card, full aura flare |
 | Player hit | Red vignette, model blinks for the 0.6 s of i-frames |
-| Idle crowd | Per-enemy bob and slight scale jitter keyed off the `seed` field |
+| Level up | ...and the aura **burst**: the ring throws out past its own radius over 0.6 s, then eases back |
+| Idle crowd | Per-enemy bob, scale jitter and a fixed yaw offset, all keyed off the `seed` field |
 
 That last one matters more than its size suggests: 400 copies of one model moving in
 perfect lockstep reads as a rendering artifact. A per-instance random phase costs one
-float already in the data layout and makes the crowd look alive.
+float already in the data layout and makes the crowd look alive. The bob is skipped for
+an *animated* actor — its VAT clip is already moving the body, and the same seed already
+offsets that clip's phase, so a sine on top would be two idle animations fighting over
+one model. The bob also scales with how fast the enemy is actually moving, so a front
+rank jammed against the player settles instead of marching in place.
+
+The burst row is M5's correction to a real bug: through M4 a level-up set the same
+`auraFlare` field the aura writes twice a second, so the world-side half of the biggest
+event in a run was pixel-for-pixel an ordinary pulse. It is a separate field now, it
+lasts nearly three times as long, and it changes the ring's **shape** rather than only
+its brightness — so the two stay distinguishable when a level-up lands on a pulse frame.
+
+The damage vignette is **proportional** to the hit since M5. A runner's 4 and an elite's
+30 drew the same flash, which told the player they were hurt but not that it was serious
+— and which of those it is decides whether they keep kiting or run.
 
 ## Ground
 

@@ -58,6 +58,9 @@ export interface UiState {
    * one — DESIGN §12 rule 4 is that damage is never missable.
    */
   lastHitAt: number;
+  /** What that hit cost, in HP. The vignette scales with it: a runner's 4 and an elite's 30 read as
+   *  the same event otherwise, which tells the player they were hurt but not that it was serious. */
+  lastHitAmount: number;
   /** Increments on each reset, so the game-over card and any run-scoped UI remount cleanly. */
   runId: number;
 }
@@ -85,6 +88,7 @@ const EMPTY: UiState = {
   dashCdMax: 2.2,
   dead: false,
   lastHitAt: -1,
+  lastHitAmount: 0,
   runId: 0,
 };
 

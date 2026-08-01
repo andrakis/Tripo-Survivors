@@ -5,7 +5,7 @@
 
 import { useRef } from 'react';
 import * as THREE from 'three';
-import { COLORS, FOG_DENSITY } from '../config';
+import { COLORS, FOG_FAR, FOG_NEAR } from '../config';
 import { Ground } from './Ground';
 import { Obstacles } from './Obstacles';
 import { CameraRig } from './CameraRig';
@@ -26,8 +26,13 @@ export function Scene() {
   return (
     <>
       {/* Fog is EXACTLY the ground colour so the horizon vanishes rather than banding, and it is
-          what makes enemies fade in as they approach instead of popping at a frustum edge. */}
-      <fogExp2 attach="fog" args={[COLORS.FOG, FOG_DENSITY]} />
+          what makes enemies fade in as they approach instead of popping at a frustum edge.
+
+          LINEAR rather than exponential since M5, so the near plane can be placed just beyond the
+          player's fixed camera distance: exp² fog has no near plane, so it was quietly dimming the
+          player — the one thing that must stay the brightest pixel on screen. config.ts FOG_NEAR
+          has the geometry. */}
+      <fog attach="fog" args={[COLORS.FOG, FOG_NEAR, FOG_FAR]} />
       <color attach="background" args={[COLORS.FOG]} />
 
       {/* Flat-shaded stage, deliberately simple lighting: no PBR, no env map, no shadow maps.

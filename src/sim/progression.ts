@@ -226,7 +226,12 @@ function announce(pr: Progression, l: Loadout, label: string, time: number): voi
   pr.shake = 1;
   // The aura is the one weapon that is always on screen and always silent, so it is the cheapest
   // place to say this in the world rather than in the HUD (DESIGN §12 rule 4, inverted).
-  l.combat.auraFlare = 1;
+  //
+  // `auraBurst`, not `auraFlare`. Through M4 this line set the pulse flare — which the aura sets
+  // itself twice a second — so the world-side half of a level-up was, on screen, an ordinary pulse,
+  // and the only real signal was a toast in a corner the player is not looking at mid-fight. The
+  // burst is longer and overshoots the ring's radius, so it reads as a different event.
+  l.combat.auraBurst = 1;
 }
 
 /**

@@ -57,10 +57,10 @@ export const ACTORS: Record<ActorId, ActorModel> = {
   player: { primitive: () => new THREE.CapsuleGeometry(0.5, 1.0, 4, 8), scale: 1.0, yOffset: 0.0, tint: 0xffe9a8 },
   grunt:  { primitive: () => new THREE.BoxGeometry(0.8, 1.2, 0.8),      scale: 1.0, yOffset: 0.0, tint: 0x7fd15a },
   runner: { primitive: () => new THREE.ConeGeometry(0.35, 1.4, 6),      scale: 1.0, yOffset: 0.0, tint: 0x5ad1c8 },
-  brute:  { primitive: () => new THREE.BoxGeometry(1.6, 2.0, 1.6),      scale: 1.0, yOffset: 0.0, tint: 0xd1585a },
-  elite:  { primitive: () => new THREE.BoxGeometry(2.8, 3.6, 2.8),      scale: 1.0, yOffset: 0.0, tint: 0xc45ad1 },
+  brute:  { primitive: () => new THREE.BoxGeometry(1.6, 2.0, 1.6),      scale: 1.0, yOffset: 0.0, tint: 0xbd6265 },
+  elite:  { primitive: () => new THREE.BoxGeometry(2.8, 3.6, 2.8),      scale: 1.0, yOffset: 0.0, tint: 0xb06ebb },
   orb:    { primitive: () => new THREE.IcosahedronGeometry(0.22, 0),    scale: 1.0, yOffset: 0.3, tint: 0x8fe3ff },
-  prop:   { primitive: () => new THREE.BoxGeometry(1, 1, 1),            scale: 1.0, yOffset: 0.0, tint: 0x6b6f7a },
+  prop:   { primitive: () => new THREE.BoxGeometry(1, 1, 1),            scale: 1.0, yOffset: 0.0, tint: 0x4e535d },
 };
 ```
 

@@ -54,6 +54,21 @@ export interface Combat {
   auraTimer: number;
   /** Decaying 0..1 flare, written on each pulse. Renderer-only — nothing in the sim reads it. */
   auraFlare: number;
+  /**
+   * Decaying 0..1 BURST, written only by a level-up. Renderer-only, and separate from `auraFlare`
+   * for a reason M5's feedback pass found by looking at a run: `announce` set the ordinary pulse
+   * flare, which the aura already sets twice a second, so the "full aura flare" DESIGN §12 promises
+   * as the world-side half of a level-up was pixel-for-pixel an ordinary pulse. The event that
+   * changes your character had no signal in the world at all — only a toast, in the HUD, which is
+   * exactly where a player mid-fight is not looking.
+   */
+  auraBurst: number;
+  /**
+   * Contact damage the last landed hit did, for the renderer. An elite hits for 30 and a runner for
+   * 4, and until M5 the vignette was identical for both — which makes the one channel DESIGN §12
+   * rule 4 reserves for "you are being hurt" say nothing about how badly.
+   */
+  lastContact: number;
   /** Live aura radius. Level 2 grows it, level 13+ scales it (DESIGN §6.3). */
   auraR: number;
   boltTimer: number;
@@ -127,6 +142,8 @@ export function createCombat(): Combat {
   return {
     auraTimer: 0,
     auraFlare: 0,
+    auraBurst: 0,
+    lastContact: 0,
     auraR: TUNING.AURA_R,
     boltTimer: 0,
     boltEnabled: false,
@@ -422,6 +439,7 @@ function stepDeaths(c: Combat, dt: number): void {
  */
 export function stepCombat(c: Combat, p: Player, s: Swarm, g: Grid, dt: number): void {
   c.auraFlare = Math.max(0, c.auraFlare - dt / TUNING.AURA_FLARE);
+  c.auraBurst = Math.max(0, c.auraBurst - dt / TUNING.AURA_BURST);
   // Last tick's drops were consumed by step 8. Clearing at the START rather than after the drain
   // means the queue is exactly "what died this tick" for anything that looks at it, including a
   // debugger stopped anywhere in the frame.
@@ -481,5 +499,8 @@ export function takeContact(c: Combat, p: Player, s: Swarm, g: Grid): boolean {
     if (contact > worst) worst = contact;
   }
 
-  return worst > 0 && damagePlayer(p, worst);
+  if (worst <= 0) return false;
+  if (!damagePlayer(p, worst)) return false;
+  c.lastContact = worst;
+  return true;
 }

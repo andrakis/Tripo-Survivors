@@ -118,16 +118,41 @@ export function Swarm() {
       if (!mesh) continue;
 
       const actor = actors[tier];
-      dummy.position.set(d[b + E_X], actor.yOffset, d[b + E_Z]);
+      const seed = d[b + E_SEED];
+      const vx = d[b + E_VX];
+      const vz = d[b + E_VZ];
+
+      // Per-enemy variation, all three channels keyed off the SAME seed the SoA has carried since
+      // M2 (ART-STYLE "Motion and feedback"). Four hundred copies of one model in perfect lockstep
+      // read as a rendering artifact, not as a crowd — and that costs nothing to fix because the
+      // float is already there. Everything below is a pure function of (seed, time, speed), so no
+      // new state exists, nothing drifts, and an enemy keeps the same body for its whole life.
+      //
+      // The BOB is skipped for an animated actor: its VAT clip is already moving the body, and the
+      // seed is already offsetting that clip's phase (further down), so adding a sine on top would
+      // be two idle animations fighting each other on the same model.
+      const speed = Math.hypot(vx, vz);
+      let y = actor.yOffset;
+      if (!actor.vat) {
+        // Scaled by how fast this enemy is actually moving, so a front rank jammed against the
+        // player settles rather than jogging on the spot — the crowd that is killing you should
+        // read as pressing in, not as marching in place.
+        const gait = Math.min(1, speed / TIERS[tier].speed);
+        y += actor.height * TUNING.BOB_AMP * gait *
+          Math.sin(now * TUNING.BOB_HZ * Math.PI * 2 + seed * Math.PI * 2);
+      }
+      dummy.position.set(d[b + E_X], y, d[b + E_Z]);
       // Face the direction of travel, unconditionally. `dummy` is shared across the whole loop, so
       // a conditional write would leave an enemy wearing the PREVIOUS enemy's rotation — a
       // guard against heading jitter at near-zero speed has to store facing per enemy, and that
       // belongs in the SoA. An enemy is only ever near-zero when jammed inside a crowd that hides
-      // it anyway; M5's per-enemy variation pass is where this gets revisited.
-      const vx = d[b + E_VX];
-      const vz = d[b + E_VZ];
-      dummy.rotation.y = Math.atan2(vx, vz) + actor.yaw;
-      dummy.scale.setScalar(actor.scale);
+      // it anyway.
+      dummy.rotation.y =
+        Math.atan2(vx, vz) + actor.yaw + (seed - 0.5) * 2 * TUNING.YAW_JITTER;
+      // Scale jitter stays well inside the gap between tiers on purpose: DESIGN §12 rule 2 says the
+      // tier reads from silhouette, and a grunt that can grow into a brute would break the one
+      // channel that survives a viewer importing models we have never seen.
+      dummy.scale.setScalar(actor.scale * (1 + (seed - 0.5) * 2 * TUNING.SCALE_JITTER));
       dummy.updateMatrix();
 
       const slot = c[tier]++;
@@ -150,7 +175,6 @@ export function Swarm() {
       const row = rows[tier];
       if (row) {
         const vat = actor.vat!;
-        const seed = d[b + E_SEED];
         const px = d[b + E_X] - game.player.x;
         const pz = d[b + E_Z] - game.player.z;
         const attacks = attackClips[tier];
@@ -158,7 +182,6 @@ export function Swarm() {
         if (attacks.length && px * px + pz * pz < TUNING.VAT_ATTACK_R * TUNING.VAT_ATTACK_R) {
           clip = attacks[(seed * attacks.length) | 0];
         } else {
-          const speed = Math.hypot(vx, vz);
           clip = vat.byName.get(
             speed < TUNING.VAT_IDLE_SPEED ? 'idle' : speed < TUNING.VAT_WALK_SPEED ? 'walk' : 'run',
           );
@@ -182,6 +205,16 @@ export function Swarm() {
       const t = Math.min(1, cm.deaths[b + D_AGE] / TUNING.DEATH_TIME);
       const row = rows[tier];
       const slot = c[tier]++;
+      const dx = cm.deaths[b + D_X];
+      const dz = cm.deaths[b + D_Z];
+      // The marker has to keep the body's size and facing, and a death marker does not carry the
+      // enemy's seed — the stride is a documented contract (ARCHITECTURE §5.1) and a fourth field
+      // for a cosmetic is not worth widening it for. Hashing the fall POSITION gives a value that is
+      // stable for the marker's whole life and uncorrelated with its neighbours, which is all the
+      // jitter needs; without it every enemy visibly snaps back to the base scale as it dies.
+      const seed = ((dx * 12.9898 + dz * 78.233) * 43758.5453) % 1;
+      const jitter = 1 + (Math.abs(seed) - 0.5) * 2 * TUNING.SCALE_JITTER;
+      const yaw = actor.yaw + (Math.abs(seed) - 0.5) * 2 * TUNING.YAW_JITTER;
 
       if (row) {
         // An animated actor DIES: the `die` clip plays once over the marker's life and holds its
@@ -190,17 +223,17 @@ export function Swarm() {
         const vat = actor.vat!;
         const clip = vat.byName.get('die') ?? vat.clips[0];
         row.array[slot] = vatRow(clip, t);
-        dummy.position.set(cm.deaths[b + D_X], actor.yOffset, cm.deaths[b + D_Z]);
-        dummy.rotation.y = actor.yaw;
-        dummy.scale.setScalar(actor.scale);
+        dummy.position.set(dx, actor.yOffset, dz);
+        dummy.rotation.y = yaw;
+        dummy.scale.setScalar(actor.scale * jitter);
       } else {
         // Punch out, then collapse. The sine swells the silhouette in the first half so the death
         // registers at the edge of vision, and (1 - t²) takes it away fast enough that a late-game
         // field of dying bodies never reads as a field of live ones. This is what a cube can do.
-        const punch = (1 + 0.55 * Math.sin(Math.PI * t)) * (1 - t * t);
+        const punch = (1 + 0.55 * Math.sin(Math.PI * t)) * (1 - t * t) * jitter;
         const flatten = 1 - t;
-        dummy.position.set(cm.deaths[b + D_X], actor.yOffset * punch * flatten, cm.deaths[b + D_Z]);
-        dummy.rotation.y = actor.yaw;
+        dummy.position.set(dx, actor.yOffset * punch * flatten, dz);
+        dummy.rotation.y = yaw;
         dummy.scale.set(actor.scale * punch, actor.scale * punch * flatten, actor.scale * punch);
       }
       dummy.updateMatrix();

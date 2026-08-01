@@ -109,8 +109,9 @@ npm run dev        # http://localhost:5182
 | `npm run serve` | **build, then serve it on 4182** — minified, one bundle |
 | `npm run preview` | serve whatever is already in `dist/`, without rebuilding |
 | `npm run lint` | `tsc --noEmit` |
-| `npm test` | vitest over `src/sim/` |
+| `npm test` | vitest over `src/sim/`, plus the readability rules |
 | `npm run verify` | drives the game in a **headed** browser and asserts against sim truth |
+| `npm run balance` | plays the game headlessly with a bot for 5 simulated minutes and reports the curve |
 
 `serve` is the one to use for a real look at the shipped game: `preview` on its own will
 happily serve a stale `dist/` from an earlier build. Note that the production bundle

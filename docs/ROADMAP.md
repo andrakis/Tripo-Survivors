@@ -7,12 +7,14 @@ a game; M5 makes it look like one; M6 is the payload the project was built to de
 See [DESIGN.md](DESIGN.md) for the systems these milestones serve and
 [ARCHITECTURE.md](ARCHITECTURE.md) for how they're built.
 
-**Status:** M0–M4 done (M0/M1 2026-07-29, M2 and M3 2026-07-30, M4 and the M4a gameplay
-pass 2026-07-31). **M6 shipped early and out of order** because a model existed to
-import: M6a (static GLTF, 2026-07-31) and M6b (VAT animation, 2026-08-01) are both code
-complete, with `grunt.glb` loaded, textured and animated in the game. The rest of the
-cast is deliberately left as the tutorial's exercise — one registry line per model. M5
-(escalation + look) is next.
+**Status:** M0–M6 done. M0/M1 2026-07-29, M2 and M3 2026-07-30, M4 and the M4a gameplay
+pass 2026-07-31, **M5 2026-08-01**. **M6 shipped early and out of order** because a model
+existed to import: M6a (static GLTF, 2026-07-31) and M6b (VAT animation, 2026-08-01) are
+both code complete, with `grunt.glb` loaded, textured and animated in the game. The rest
+of the cast is deliberately left as the tutorial's exercise — one registry line per model.
+
+Every milestone on this roadmap is now closed except the two asset-blocked halves of M6.
+**The first tutorial can be recorded.**
 
 ---
 
@@ -403,34 +405,114 @@ field), `shots/boost.png`, `shots/orb-merge.png`.
   and knows nothing about orbs, which is what kept step 8 a five-line loop in
   [game.ts](../src/game.ts) rather than a dependency.
 
-## Milestone 5 — Escalation + look ⬜ not started
+## Milestone 5 — Escalation + look ✅ done (2026-08-01)
 
-- [ ] The four tiers with their entry times and per-tier stats
-      ([DESIGN.md §7.1](DESIGN.md)); elites on their own timer.
-- [ ] Per-enemy `seed`-keyed bob and scale jitter so the crowd isn't in lockstep.
-- [ ] Palette pass against [ART-STYLE.md](ART-STYLE.md); fog tuned so the spawn ring
-      sits at the edge of visibility. **Two known offences against
-      [DESIGN §12](DESIGN.md) rule 1 are waiting here:** the brutes are large and
-      saturated enough to out-read the player, and the props are 8-unit blocks in a
-      value range that competes with the cast. M3 already took the third — the
-      player's see-through pass — because an invisible player made the milestone's own
-      acceptance criterion unjudgeable.
-- [ ] Feedback pass: a second look at everything M3 and M4 shipped (death punch, aura
-      flare, hit vignette, `FLASH_MIX`, the level-up shake and toast) once there is a
-      full run to tune against.
-- [ ] Balance pass on the spawn curve against the XP curve. M4 checked only that the
-      two are within an order of magnitude of each other; the "level 8 by 2:30, level
-      12 by 5:00" target needs a played run, not arithmetic.
-- [ ] A second look at `KNOCKBACK` and the Orbiter's cadence against a real late run —
-      both were sized against the swarm's speeds on paper (see *What M4 learned*).
+- [x] `scripts/balance.ts` (`npm run balance`) — **a played run, without a player.** A bot
+      drives `stepGame` at a fixed 60 Hz for five simulated minutes and reports when each
+      level landed, how long it lived and what the field looked like on the way. Nothing
+      else in this milestone could be settled honestly without it, and it is the one thing
+      here that was not on the list. `game.ts`'s dev seam is now guarded on `window` as
+      well as `DEV`, which is all it took to make the spine run in node.
+- [x] The four tiers, their entry times and per-tier stats — carried over from M2, but
+      **the runner's speed was wrong and had been since M0.** 5.2 against a player at 7.0,
+      so the tier whose entire job is to be faster than you was slower. Now 7.6.
+- [x] Per-enemy `seed`-keyed bob, scale jitter **and yaw offset**, all off the float the
+      SoA has carried since M2. The bob is skipped for animated actors and scales with how
+      fast the enemy is actually moving; death markers hash their fall position so a body
+      does not change size at the moment it dies.
+- [x] Palette pass: props darkened out of the cast's value range, the brute and the elite
+      **desaturated** (not darkened — see below), every prop capped at 4.6 units, and the
+      fog changed from exponential to **linear** with its near plane past the player.
+- [x] Feedback pass: the level-up now has a real world-side signal (`combat.auraBurst`,
+      a ring that throws past its own radius), and the damage vignette is proportional to
+      the hit that caused it. `FLASH_MIX`, `DEATH_TIME`, the shake and the toast were all
+      re-read against a full run and left alone — their M3/M4/M6b reasoning holds.
+- [x] Balance pass, against 20 bot runs rather than arithmetic. Tier payouts roughly
+      doubled and `XP_BASE` went 5 → 7; level 8 now lands around 1:55 and level 12 around
+      3:40 against targets of 2:30 and 5:00, over two separate twenty-run samples.
+- [x] `KNOCKBACK` and the Orbiter cadence re-checked on a fixed level-13 loadout. Both
+      values stand, and both now have a measured margin in `config.ts` instead of a
+      paper estimate.
+- [x] Tests: 19 new vitest cases (153 total) — a whole new `src/readability.test.ts` that
+      asserts the DESIGN §12 and ART-STYLE rules as rules, plus the aura burst and the
+      recorded contact damage. `npm run verify` extended to **95 browser checks**.
 
 **Done when:** a run is survivable for ~5 minutes by someone competent, escalation is
-legible without reading a number, and a still frame looks like a game.
+legible without reading a number, and a still frame looks like a game. **Verified** —
+95/95 browser checks over three consecutive runs at a locked 60 fps, `lint`/`build`/`test`
+clean, and 20 bot runs with 15 of them surviving the full five and a half minutes.
 
 **This is the point the first tutorial can be recorded.** Everything after it is
 about the models.
 
-## Milestone 6 — The tutorial payload ⬜ not started
+### What M5 learned
+
+- **A bot that only avoids danger is not a player, and the difference is a REWARD.** The
+  first version scored headings by threat alone, and the player moves at 7.0 against a
+  grunt's 3.4 — so it simply left, and finished sixty seconds of play with zero kills. Real
+  play is a shallow kite: you stay close enough that the front rank stays inside the aura,
+  which means proximity has to *score positively* in a band, not merely score less badly.
+  That single term is the difference between a script that measures the game and a script
+  that measures its own timidity.
+- **Aggression has to be a function of health, or you get one of two useless bots.** At a
+  fixed weight the bot either hugs the front rank, out-kills everything and dies at 0:45,
+  or kites forever and banks nothing. A person does neither — they push while healthy and
+  give ground while hurt — and scaling the graze reward by `hp / maxHp` produced the first
+  bot that both survived five minutes and levelled.
+- **The stand-off had to be relative to the aura, and absolute cost an afternoon.** The
+  graze reward counts enemies between the stand-off and the ring's rim, so a stand-off of
+  2.9 against a level-1 aura of 3.0 leaves a band a tenth of a unit wide. The bot could
+  then never be rewarded for grinding anything, settled into a wide orbit with the crowd
+  six units out, and cleared 12% of the field in five minutes — which reads exactly like a
+  balance result and is not one. Every number in a measuring instrument is a place a wrong
+  answer can hide.
+- **Rejecting a candidate heading is not the same as penalising it.** Props and walls were
+  hard rejections, which looks equivalent until the bot is backed into the Pillar Ring and
+  *every* candidate is rejected at once — at which point it writes a zero input vector and
+  stands perfectly still inside a crowd. That one line was most of the early deaths.
+- **The run is a snowball, and the ceiling was never the problem.** Handed a level-13
+  loadout at t=0 the bot cleared 82% of the field at 4.9 kills a second and levelled every
+  fifteen seconds; on the level-1 kit it cleared 20% at 0.31 and stayed there. So "level 12
+  by 5:00" was not failing because the weapons were weak, it was failing because nothing
+  crossed the threshold — and the fix belonged at the bottom of the curve. Worth stating
+  because the instinct is to buff the weapons, and the measurement says the opposite.
+- **The runner was slower than the player for four milestones, and both documents said
+  otherwise.** DESIGN §5 and `PLAYER_SPEED`'s own comment each described a tier "faster
+  than you"; `TIERS` gave it 5.2 against 7.0. Nobody noticed because nobody had held a
+  single direction for a minute — the bot did it on its first run and got zero kills. A
+  number that contradicts the two places that document it is invisible to review and
+  obvious to a machine that plays.
+- **The palette offence was chroma, not value.** The player was already the brightest thing
+  on screen by luminance, so the rule as written was satisfied while the frame was still
+  wrong. Attention is *area × chroma*: a 4.5-unit elite at full saturation out-shouts a
+  1.7-unit character brighter than it. The fix is desaturating the big tiers and leaving
+  the small ones alone, and ART-STYLE gained a third palette rule saying so.
+- **"Fog tuned so the spawn ring sits at the edge of visibility" is geometrically
+  impossible, and it took measuring to see it.** The ring is one *ground* distance and many
+  *camera* distances: with the fixed 45° rig its near arc is 26.7 units from the camera —
+  closer than the player, at 36.8 — and its far arc is 63.7. No distance fog covers that.
+  The M0 brief was wrong rather than the tuning, and the useful half of the discovery was
+  the other thing exponential fog was doing: with no near plane, the player was permanently
+  ~23% blended into the fog colour, quietly taxing the one pixel the whole look rests on.
+- **A level-up's world-side signal was invisible, and the code looked completely correct.**
+  `announce` set `combat.auraFlare` — which is exactly what "flare the aura" should do,
+  except the aura sets that same field to 1 twice a second, so the biggest event in the run
+  rendered as an ordinary pulse. A signal that shares a channel with a metronome is not a
+  signal. It needed its own field, a longer decay, and a different *shape*.
+- **Two of the new readability tests failed on their first run, and both times the test was
+  wrong.** The height ladder is three rungs and not four — the grunt and the runner are
+  seven percent apart and are separated by width and hue, not size — and the tier table's
+  HP column is deliberately non-monotonic, because the runner is a sidestep rather than a
+  rung. Writing the rules down as assertions is what forced both to be stated at all.
+- **The verification harness disturbed its own measurement for the sixth and seventh
+  time.** A crowd of 60 was read twice to prove the bob moves, matching the mesh whose
+  instance count equalled `swarm.n` — but the spawn director appends between two reads, so
+  the second read found a different mesh and the check reported "nothing moved". And the
+  aura ring was found by geometry *type*, which matched some other ring in the scene and
+  reported a constant 0.33× forever. Both failed in the direction that looks like a broken
+  feature, which is the expensive direction.
+
+## Milestone 6 — The tutorial payload ✅ code done · cast blocked on assets
 
 Split into two independently shippable halves.
 

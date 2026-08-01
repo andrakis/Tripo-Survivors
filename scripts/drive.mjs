@@ -799,6 +799,11 @@ check(
   `${stillThere.length} orb, ${noPay.total} xp banked`,
 );
 
+// What that orb is worth, read off the field rather than hard-coded: TIERS[].xp is a balance number
+// and M5 doubled it. A check that restates the tuning table fails every time the table is tuned, and
+// tells you nothing when it does.
+const orbWorth = await page.evaluate(() => window.__game.orbs.data[2]);
+
 // Walk onto it: the magnet takes it from there.
 await page.evaluate(() => {
   const g = window.__game;
@@ -809,8 +814,8 @@ await page.waitForTimeout(700);
 const collected = await prog();
 check(
   'walking into the magnet radius banks the orb',
-  collected.orbs === 0 && collected.total === 1,
-  `${collected.orbs} left, ${collected.total} xp`,
+  collected.orbs === 0 && collected.total === orbWorth,
+  `${collected.orbs} left, ${collected.total} xp (the orb was worth ${orbWorth})`,
 );
 
 // A crowd killed inside the aura pays out enough to level, and the orbs are cleaned up as it goes.
@@ -825,9 +830,13 @@ check(
   `lv ${levelled.level}, ${levelled.total} xp, ${levelled.orbs} orbs left`,
 );
 check(
+  // The SPINE, not the level. Which level a fixed crowd pays for is a balance number (it landed on 3
+  // through M4 and on 4 after M5's XP pass), and pinning it made this check fail for a reason that
+  // has nothing to do with what it is testing: that passing level 3 grants the Lance automatically
+  // while level 2 raised a card the harness answered.
   'level 3 unlocked the Lance, and the level-2 choice was taken',
-  levelled.bolt === true && levelled.text.includes('lv 3'),
-  `lance ${levelled.bolt}, auraR ${levelled.auraR} (level 2 is a choice — the harness took card 0)`,
+  levelled.bolt === true && levelled.level >= 3 && levelled.text.includes(`lv ${levelled.level}`),
+  `lance ${levelled.bolt}, lv ${levelled.level}, auraR ${levelled.auraR} (level 2 is a choice — the harness took card 0)`,
 );
 
 // --- the upgrade choice ------------------------------------------------------------------------
@@ -837,8 +846,13 @@ await page.evaluate(() => {
   const g = window.__game;
   g.swarm.n = 0;
   g.orbs.n = 0;
-  // Land on an even level, which is a choice level. Odd levels 3-11 grant a weapon instead.
-  if (g.prog.level % 2 === 1) window.__grantXp(g.prog.need);
+  // Advance until the NEXT level-up is a CHOICE level. Odd levels 3-11 grant a weapon instead, and
+  // the first version of this line assumed the crowd above had left the run on an odd level — which
+  // was true until M5's XP pass moved it, at which point this walked onto a weapon level and the
+  // three checks below all failed looking for a card that was never going to appear.
+  const weapon = (lv) => lv % 2 === 1 && lv >= 3 && lv <= 11;
+  let guard = 0;
+  while (weapon(g.prog.level + 1) && guard++ < 8) window.__grantXp(g.prog.need);
 });
 await page.waitForTimeout(120);
 const beforeCard = await prog();
@@ -1563,6 +1577,164 @@ check(
   );
   await rearm();
 }
+// --- M5: the crowd is a crowd, not four hundred copies of one thing -------------------------------
+//
+// The seed-keyed variation (ART-STYLE "Motion and feedback") is the one M5 change that is only real
+// on screen: the sim is untouched by it, so nothing under sim/ can prove it happened. These read the
+// instance matrices back off the live InstancedMesh.
+{
+  await teleport(-100, 80);
+  await disarm();
+  await page.evaluate(() => {
+    window.__game.swarm.n = 0;
+    window.__game.orbs.n = 0;
+    window.__spawn(60, 2, 16); // brutes: a tier on its PRIMITIVE, so the bob is not a VAT clip
+  });
+  await page.waitForTimeout(500);
+
+  // Scale sits in the length of the matrix's first basis vector; height is element 13. Read both off
+  // the mesh whose instance count matches the live swarm, which is the tier we just filled.
+  const readBodies = () =>
+    page.evaluate(() => {
+      // The biggest instanced mesh with no VAT attribute: the tier we just filled, drawn on its
+      // primitive. NOT "the one whose count equals swarm.n" — the spawn director keeps adding to the
+      // field between two reads, so that test picks a different mesh (or none) on the second call,
+      // and the check silently becomes "nothing moved" instead of failing honestly.
+      let best = null;
+      window.__r3f?.scene.traverse((o) => {
+        if (!o.isInstancedMesh || o.geometry.getAttribute('aVatRow')) return;
+        if (o.count > 10 && (!best || o.count > best.count)) best = o;
+      });
+      if (!best) return null;
+      const m = best.instanceMatrix.array;
+      const out = [];
+      for (let i = 0; i < best.count; i++) {
+        const b = i * 16;
+        out.push({ scale: Math.hypot(m[b], m[b + 1], m[b + 2]), y: m[b + 13] });
+      }
+      return out;
+    });
+
+  const bodies = await readBodies();
+  const scales = bodies ? bodies.map((b) => b.scale) : [];
+  const spread = scales.length ? Math.max(...scales) / Math.min(...scales) : 1;
+  // Distinct-COUNT alone is the wrong test and the first version of this line used it: 60 samples of
+  // a continuous jitter rounded to three decimals collide by birthday paradox, so ~50 of 60 is the
+  // expected result and an 80% threshold fails at random. The spread is what actually proves the
+  // jitter is live, and the count only has to show it is per-instance rather than per-tier.
+  const distinct = new Set(scales.map((v) => v.toFixed(3))).size;
+  check(
+    'no two enemies are the same size — the crowd is not one model stamped 60 times',
+    bodies !== null && distinct > scales.length * 0.6 && spread > 1.1,
+    `${distinct} distinct scales across ${scales.length} bodies, spread ${spread.toFixed(2)}x`,
+  );
+  check(
+    // The jitter has to be invisible as an effect and visible as variety: DESIGN §12 rule 2 rests on
+    // the height ladder, and a grunt that could grow into a brute would delete it.
+    'and the size variation stays far inside the gap between tiers',
+    spread < 1.25,
+    `widest to narrowest is ${spread.toFixed(2)}x (the brute-to-elite gap is 1.73x)`,
+  );
+
+  const later = await page.waitForTimeout(220).then(readBodies);
+  // Only the slots both reads share: nothing dies here (weapons are disarmed) so [0, n) is stable,
+  // but the director appends to it, and the second read is the longer of the two.
+  const common = bodies && later ? Math.min(bodies.length, later.length) : 0;
+  let bobbed = 0;
+  for (let i = 0; i < common; i++) if (Math.abs(bodies[i].y - later[i].y) > 1e-4) bobbed++;
+  check(
+    'a primitive crowd bobs, each body on its own phase',
+    common > 10 && bobbed > common * 0.5 && new Set((bodies ?? []).map((b) => b.y.toFixed(3))).size > 10,
+    `${bobbed}/${common} moved vertically in 0.22 s, ${new Set((bodies ?? []).map((b) => b.y.toFixed(3))).size} distinct heights`,
+  );
+  await rearm();
+}
+
+// --- M5: the fog leaves the player alone ---------------------------------------------------------
+{
+  const fog = await page.evaluate(() => {
+    const f = window.__r3f?.scene.fog;
+    if (!f) return null;
+    const cam = window.__r3f.camera;
+    const g = window.__game;
+    return {
+      linear: f.isFog === true && f.isFogExp2 !== true,
+      near: f.near,
+      far: f.far,
+      toPlayer: Math.hypot(cam.position.x - g.player.x, cam.position.y, cam.position.z - g.player.z),
+    };
+  });
+  check(
+    // Exponential fog has no near plane, so through M4 the player was permanently ~23% blended into
+    // the fog colour — a standing tax on the one thing ART-STYLE says must be the brightest pixel.
+    'the fog starts beyond the player, so the player is never fogged',
+    fog !== null && fog.linear && fog.near > fog.toPlayer,
+    `linear ${fog?.linear}, near ${fog?.near}, camera is ${fog?.toPlayer.toFixed(1)} u from the player`,
+  );
+}
+
+// --- M5: a level-up is visible in the WORLD, not only in the HUD ----------------------------------
+//
+// The bug this covers: through M4 `announce` set `combat.auraFlare`, which the aura sets itself twice
+// a second, so the level-up's world-side signal was pixel-for-pixel an ordinary pulse. During a fight
+// the player is not looking at the HUD, which made the biggest event in the run effectively silent.
+{
+  await teleport(-100, 80);
+  await disarm();
+  await page.evaluate(() => {
+    window.__game.swarm.n = 0;
+    window.__game.orbs.n = 0;
+  });
+  const ringScale = () =>
+    page.evaluate(() => {
+      // Identified by its authored inner radius (scene/AuraRing.tsx draws it at 0.94..1 and scales
+      // the GROUP to the live radius), not just by being a RingGeometry — the HUD-ish bits of the
+      // scene have rings too, and matching on the type alone found one of those and reported a
+      // constant 0.33x.
+      let s = 0;
+      window.__r3f?.scene.traverse((o) => {
+        if (!o.isMesh || o.geometry?.type !== 'RingGeometry') return;
+        if (Math.abs(o.geometry.parameters.innerRadius - 0.94) < 1e-6) s = o.parent.scale.x;
+      });
+      return s / window.__game.combat.auraR;
+    });
+
+  // A pulse alone: the ring brightens but never leaves its own radius.
+  await page.evaluate(() => {
+    window.__game.combat.auraTimer = 0.001;
+  });
+  await page.waitForTimeout(90);
+  const pulsed = await ringScale();
+
+  // A level-up. Granted onto a WEAPON level so nothing pauses and the sim keeps running underneath.
+  await page.evaluate(() => {
+    const g = window.__game;
+    const weapon = (lv) => lv % 2 === 1 && lv >= 3 && lv <= 11;
+    let guard = 0;
+    while (!weapon(g.prog.level + 1) && guard++ < 8) window.__grantXp(g.prog.need);
+    window.__grantXp(g.prog.need);
+  });
+  let burst = 0;
+  for (let i = 0; i < 6; i++) {
+    burst = Math.max(burst, await ringScale());
+    await page.waitForTimeout(45);
+  }
+  check(
+    'a level-up throws the aura ring wider than its radius, and a pulse never does',
+    pulsed < 1.02 && burst > 1.2,
+    `pulse ${pulsed.toFixed(2)}x radius, level-up ${burst.toFixed(2)}x`,
+  );
+  await page.waitForTimeout(900);
+  check(
+    'and the ring settles back to its true radius, so the disc never lies about reach',
+    Math.abs((await ringScale()) - 1) < 0.01,
+    `${(await ringScale()).toFixed(3)}x`,
+  );
+  await page.evaluate(() => window.__reset());
+  await page.waitForTimeout(150);
+  await rearm();
+}
+
 check(
   'every actor without a url is on its primitive, with no warning',
   ['player', 'runner', 'brute', 'elite', 'orb', 'prop'].every((id) => models[id]?.fallback === true),

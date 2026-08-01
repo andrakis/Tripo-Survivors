@@ -167,6 +167,7 @@ function syncStore(g: Game): void {
     dashCdMax: g.player.dashCdMax,
     dead: !isAlive(g.player),
     lastHitAt: g.lastHitAt,
+    lastHitAmount: g.combat.lastContact,
     runId: g.runId,
   });
 }
@@ -263,7 +264,13 @@ if (import.meta.hot) {
 // takes minutes to reach, and a verification run that has to wait four minutes to look at 400
 // enemies is a verification run nobody will execute. It is also how you find your own machine's
 // ceiling by hand: `__spawn(2000, 0)` in the console.
-if (import.meta.env.DEV) {
+//
+// Guarded on `window` as well as on DEV so the spine stays importable in plain node. That is not
+// hypothetical tidiness: scripts/balance.ts drives `stepGame` headlessly for five simulated minutes,
+// which is the only way to judge the spawn curve against the XP curve without a human playing it
+// (ROADMAP M5). Everything under sim/ already runs in node by rule (ARCHITECTURE §2.1); this one
+// line extends that to the file that orders them.
+if (import.meta.env.DEV && typeof window !== 'undefined') {
   const w = window as unknown as {
     __game: Game;
     __reset: () => void;

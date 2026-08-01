@@ -30,21 +30,33 @@ export interface Obstacle {
 // Each of these earns its place by shaping the swarm's path: the Keep splits an approach from the
 // north, the East Wall forces a real detour rather than a step aside, and the Pillar Ring is a
 // kiting playground. They are also the third model slot a tutorial can fill.
+// M5 lowered every one of these. The camera looks down at exactly 45° (CAM_OFFSET is [0, 26, 26]),
+// so a prop of height h hides the ground for h units directly behind it, and hides a 1.7-unit
+// character for h - 1.7. The 8-unit pillars were therefore throwing a SIX-METRE blind spot each,
+// and the Pillar Ring — the one piece of geometry the design calls a kiting playground — was four
+// of them in a cluster. M1 logged this as prop occlusion and M3 answered half of it with the
+// player's see-through pass; what that pass cannot fix is the crowd, and a threat you cannot see is
+// worse than a player you cannot see in a game whose only verb is where you stand.
+//
+// Nothing here goes above 4.6 now, so the worst blind spot is under three units — about one rank of
+// enemies rather than four. The props are still chunky (ART-STYLE decision 1) and still read as
+// landmarks from a 45° view, because at that angle a prop's footprint is as much of its silhouette
+// as its height is, and the footprints are untouched.
 export const OBSTACLES: readonly Obstacle[] = [
-  { x: 0, z: -34, hx: 5.0, hz: 5.0, height: 6.0 }, // the Keep — central landmark
-  { x: -18, z: -26, hx: 2.5, hz: 2.5, height: 3.5 }, // its two outbuildings
-  { x: 18, z: -26, hx: 2.5, hz: 2.5, height: 3.5 },
-  { x: 62, z: -8, hx: 2.0, hz: 20.0, height: 4.5 }, // East Wall — long enough to be a real detour
-  { x: 48, z: 44, hx: 3.5, hz: 3.5, height: 7.0 }, // Southeast Tower
-  { x: -52, z: 30, hx: 2.2, hz: 2.2, height: 8.0 }, // Pillar Ring — good kiting geometry
-  { x: -34, z: 42, hx: 2.2, hz: 2.2, height: 8.0 },
-  { x: -46, z: 56, hx: 2.2, hz: 2.2, height: 8.0 },
-  { x: -66, z: 46, hx: 2.2, hz: 2.2, height: 8.0 },
-  { x: -74, z: -22, hx: 4.0, hz: 4.0, height: 5.0 }, // West Rubble
-  { x: -58, z: -40, hx: 2.5, hz: 2.5, height: 3.5 },
-  { x: 24, z: 66, hx: 12.0, hz: 2.0, height: 4.0 }, // South Wall
-  { x: 84, z: -56, hx: 3.0, hz: 3.0, height: 6.0 }, // Northeast Outlier
-  { x: -12, z: 58, hx: 3.0, hz: 3.0, height: 4.5 },
+  { x: 0, z: -34, hx: 5.0, hz: 5.0, height: 4.6 }, // the Keep — central landmark, still the tallest
+  { x: -18, z: -26, hx: 2.5, hz: 2.5, height: 2.8 }, // its two outbuildings
+  { x: 18, z: -26, hx: 2.5, hz: 2.5, height: 2.8 },
+  { x: 62, z: -8, hx: 2.0, hz: 20.0, height: 3.4 }, // East Wall — long enough to be a real detour
+  { x: 48, z: 44, hx: 3.5, hz: 3.5, height: 4.4 }, // Southeast Tower
+  { x: -52, z: 30, hx: 2.2, hz: 2.2, height: 4.2 }, // Pillar Ring — good kiting geometry
+  { x: -34, z: 42, hx: 2.2, hz: 2.2, height: 4.2 },
+  { x: -46, z: 56, hx: 2.2, hz: 2.2, height: 4.2 },
+  { x: -66, z: 46, hx: 2.2, hz: 2.2, height: 4.2 },
+  { x: -74, z: -22, hx: 4.0, hz: 4.0, height: 3.6 }, // West Rubble
+  { x: -58, z: -40, hx: 2.5, hz: 2.5, height: 2.6 },
+  { x: 24, z: 66, hx: 12.0, hz: 2.0, height: 3.0 }, // South Wall
+  { x: 84, z: -56, hx: 3.0, hz: 3.0, height: 4.2 }, // Northeast Outlier
+  { x: -12, z: 58, hx: 3.0, hz: 3.0, height: 3.4 },
 ];
 
 /** Clamp a point inside the arena, leaving `radius` of margin, writing the result into `out`. */

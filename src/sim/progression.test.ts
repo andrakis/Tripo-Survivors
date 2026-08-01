@@ -116,31 +116,32 @@ function cumulative(level: number): number {
 describe('the XP curve', () => {
   it('matches the table in DESIGN §8', () => {
     // These are the FORMULA's values. DESIGN §8's printed table was a few points high from level 5
-    // up (53/106/191 against 52/102/184) — the formula is the specification and the table was the
-    // approximation of it, so the table was corrected rather than the curve.
-    expect(xpToNext(1)).toBe(5);
-    expect(xpToNext(2)).toBe(14);
-    expect(xpToNext(3)).toBe(25);
-    expect(xpToNext(4)).toBe(38);
-    expect(xpToNext(5)).toBe(52);
-    expect(xpToNext(8)).toBe(102);
-    expect(xpToNext(12)).toBe(184);
+    // up in the first draft — the formula is the specification and the table is its output, so the
+    // table is corrected whenever these move. They moved in M5's balance pass: XP_BASE went 5 -> 7
+    // alongside a doubled TIERS payout (config.ts has the played-run numbers behind both).
+    expect(xpToNext(1)).toBe(7);
+    expect(xpToNext(2)).toBe(20);
+    expect(xpToNext(3)).toBe(35);
+    expect(xpToNext(4)).toBe(53);
+    expect(xpToNext(5)).toBe(73);
+    expect(xpToNext(8)).toBe(143);
+    expect(xpToNext(12)).toBe(257);
     // ...and the cumulative column, which is what the "level 8 by 2:30" target is actually against.
-    expect(cumulative(8)).toBe(287);
-    expect(cumulative(12)).toBe(813);
+    expect(cumulative(8)).toBe(401);
+    expect(cumulative(12)).toBe(1139);
   });
 
   it('banks XP toward the next level and never loses the remainder', () => {
     const w = world();
-    grant(w, 4);
+    grant(w, 5);
     expect(w.prog.level).toBe(1);
-    expect(w.prog.xp).toBe(4);
+    expect(w.prog.xp).toBe(5);
 
-    grant(w, 3); // 7 total: 5 spends on level 2, 2 carries
+    grant(w, 4); // 9 total: 7 spends on level 2, 2 carries
     expect(w.prog.level).toBe(2);
     expect(w.prog.xp).toBe(2);
     expect(w.prog.need).toBe(xpToNext(2));
-    expect(w.prog.totalXp).toBe(7);
+    expect(w.prog.totalXp).toBe(9);
   });
 });
 
@@ -339,8 +340,8 @@ describe('a scripted run', () => {
     // The acceptance test. 30 grunts standing inside the aura, nothing else: no spawn director, no
     // swarm movement, no randomness in the chain except which cards are offered — and the harness
     // always takes card 0, so even that is pinned. Two pulses kill each (10 hp, 6 damage), each
-    // drops a 1 XP orb at 2.0 units — inside the magnet radius — so the whole 30 XP is banked, and
-    // 30 XP is exactly levels 2 and 3 with 11 left over toward level 4 (5 + 14 = 19).
+    // drops a 2 XP orb at 2.0 units — inside the magnet radius — so the whole 60 XP is banked, and
+    // 60 XP is exactly levels 2 and 3 with 33 left over toward level 4 (7 + 20 = 27).
     const w = world();
     for (let i = 0; i < 30; i++) {
       const a = (i / 30) * Math.PI * 2;
@@ -352,9 +353,9 @@ describe('a scripted run', () => {
     expect(w.swarm.n).toBe(0);
     expect(w.combat.kills).toBe(30);
     expect(w.orbs.n).toBe(0); // every orb collected
-    expect(w.prog.totalXp).toBe(30);
+    expect(w.prog.totalXp).toBe(60);
     expect(w.prog.level).toBe(3);
-    expect(w.prog.xp).toBe(30 - 5 - 14);
+    expect(w.prog.xp).toBe(60 - 7 - 20);
     expect(w.prog.need).toBe(xpToNext(3));
     expect(w.prog.lastUnlock).toBe(AUTO_UNLOCKS[3].label);
 

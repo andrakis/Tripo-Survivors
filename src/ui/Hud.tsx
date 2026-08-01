@@ -32,6 +32,7 @@ export function Hud() {
   const time = useUi((s) => s.time);
   const kills = useUi((s) => s.kills);
   const lastHitAt = useUi((s) => s.lastHitAt);
+  const lastHitAmount = useUi((s) => s.lastHitAmount);
   const level = useUi((s) => s.level);
   const xp = useUi((s) => s.xp);
   const xpNeed = useUi((s) => s.xpNeed);
@@ -45,6 +46,15 @@ export function Hud() {
   const xpFrac = xpNeed > 0 ? Math.min(1, xp / xpNeed) : 0;
   const dashReady = dashCd <= 0;
   const dashFrac = dashCdMax > 0 ? 1 - Math.min(1, dashCd / dashCdMax) : 1;
+
+  // How hard the last hit was, 0..1, normalised against the elite's 30 — the worst contact damage in
+  // TIERS, so the scale is "how close was that to the worst thing in the game" rather than an
+  // absolute number the player never sees. `hitStrength` never bottoms out: even the smallest graze
+  // has to be unmissable (DESIGN §12 rule 4), it just should not look like an elite.
+  const hitHeavy = Math.min(1, lastHitAmount / 30);
+  const hitStrength = 0.55 + 0.45 * hitHeavy;
+  const hitHold = 0.42 + 0.35 * hitHeavy;
+  const hitInner = 52 - 20 * hitHeavy;
 
   return (
     <>
@@ -65,9 +75,14 @@ export function Hud() {
             inset: 0,
             zIndex: 9,
             pointerEvents: 'none',
-            background:
-              'radial-gradient(ellipse at center, #ff3b3000 38%, #ff3b3055 78%, #ff3b30aa 100%)',
-            animation: 'hit-vignette 0.55s ease-out forwards',
+            // Scaled by what the hit actually cost. Through M4 a runner's 4 and an elite's 30 drew
+            // exactly the same flash, so the channel reserved for "you are being hurt" carried no
+            // information about how badly — and in a game where the answer changes whether you keep
+            // kiting or run, that is the more useful half of the message. The gradient reaches
+            // further in and holds longer for a heavy hit; a graze stays a rim.
+            background: `radial-gradient(ellipse at center, #ff3b3000 ${hitInner}%, #ff3b3055 78%, #ff3b30aa 100%)`,
+            animation: `hit-vignette ${hitHold}s ease-out forwards`,
+            opacity: hitStrength,
           }}
         />
       )}

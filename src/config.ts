@@ -29,7 +29,10 @@ export const CELLS_PER_WORLD = CFG.GRID_W / CFG.WORLD_X; // 0.5 — valid on bot
 export const TUNING = {
   // --- player (DESIGN §5) ---
   PLAYER_HP: 100,
-  PLAYER_SPEED: 7.0, // faster than a grunt (3.4), SLOWER than a runner (5.2) — see DESIGN §5
+  PLAYER_SPEED: 7.0, // faster than a grunt (3.4), SLOWER than a runner (7.6) — see DESIGN §5.
+  // That parenthesis said 5.2 from M0 to M5 while TIERS actually held 5.2, which made this comment
+  // and DESIGN §5 both wrong about the same number in the same direction. The runner was corrected,
+  // not the comment; see the note on the runner's row in TIERS below.
   PLAYER_R: 0.6,
   PLAYER_RESPONSE: 30, // velocity lerp rate toward the input heading, as 1 - exp(-k*dt).
   // Not in DESIGN — it is a feel constant, found by driving the character (ROADMAP M1). High enough
@@ -70,6 +73,11 @@ export const TUNING = {
   AURA_RATE: 2, // pulses per second
   AURA_FLARE: 0.22, // seconds the ring stays bright after a pulse. Purely visual, but load-bearing:
   // the aura is silent and has no projectile, so the flare is the ONLY evidence it fired.
+  AURA_BURST: 0.6, // seconds the LEVEL-UP flare lasts — nearly three times a pulse's, because it has
+  // to be legible as a different event and not as an unusually keen pulse. It also overshoots the
+  // ring's radius (scene/AuraRing.tsx), which a pulse never does: the two signals differ in shape,
+  // not just in brightness, so they stay distinguishable when a level-up lands on a pulse frame.
+  AURA_BURST_OVERSHOOT: 0.55, // extra radius at the peak of a burst, as a fraction of AURA_R
   BOLT_DAMAGE: 12,
   BOLT_SPEED: 26,
   BOLT_INTERVAL: 0.55, // seconds between shots
@@ -86,6 +94,13 @@ export const TUNING = {
   ORBITER_DAMAGE: 5,
   ORBITER_RATE: 5, // hits per second. Contact damage on a cadence rather than continuously — see
   // sim/combat.ts stepOrbiters for why a true contact test would need per-enemy state.
+  //
+  // M5 re-checked this against a late run and it has a GEOMETRIC floor, which is a better answer
+  // than a feel argument: between two hits the sphere sweeps ORBITER_SPIN / rate radians, or
+  // (2.6 / rate) × ORBITER_R units of arc, and it covers 2 × ORBITER_HIT_R = 1.8 units. Gap-free
+  // therefore needs rate ≥ 2.6 × 2.4 / 1.8 ≈ 3.5, and 5 carries about 40% margin over that. Below
+  // the floor the ring visibly leaks: at rate 3 a bot on a fixed level-13 loadout cleared 70% of the
+  // field over four 200 s runs against 80% at 5, with the same damage per hit.
   KNOCKBACK: 7, // Concussion (level 11): outward velocity added to everything an aura pulse hits.
   // A velocity impulse, not a teleport: the swarm's steering lerp bleeds it off against the flow
   // heading at STEER_RESPONSE, so the net displacement is about 0.17 × this — ~1.2 units per pulse —
@@ -95,6 +110,18 @@ export const TUNING = {
   // than a runner: pushed 2.3 u twice a second, a brute (2.2 u/s) and an elite (1.8 u/s) can never
   // close, and level 11 quietly ends the run's difficulty curve. At 7 the fast crowd walks straight
   // back in and only the heavies are held off — which is what a defensive unlock should buy.
+  //
+  // M5 measured that claim instead of asserting it (scripts/balance.ts, fixed level-13 loadout, four
+  // 200 s runs each, reading the CLOSEST a brute or elite ever got):
+  //
+  //     knockback   0     7     10    12    14
+  //     closest    1.05  0.99  0.80  1.62  1.43   units
+  //
+  // Contact reach is PLAYER_R + UNIT_R = 1.1, so the line the mechanic crosses sits between 10 and
+  // 12: at or below it the heavies still land hits, above it they never touch the player again in
+  // five minutes of play. 7 is comfortably on the correct side with room to spare, and the value
+  // stands unchanged. Hits-per-second, which is the obvious metric, answers a different question and
+  // moves the WRONG way — holding the heavies off lets the player stand in the light crowd longer.
 
   // --- XP orbs (DESIGN §8) ---
   ORB_SPEED_MIN: 3.5, // magnet speed at the rim of the pickup radius...
@@ -157,7 +184,14 @@ export const TUNING = {
   ELITE_INTERVAL: 45, // elites spawn on their OWN timer, not out of the general budget (DESIGN §7.2)
 
   // --- progression (DESIGN §8) ---
-  XP_BASE: 5,
+  XP_BASE: 7, // was 5 through M4. Raised in M5's balance pass, against played runs rather than
+  // arithmetic (scripts/balance.ts, `npm run balance`) — and raised only because the TIERS payout
+  // below roughly doubled in the same pass. The two moved together on purpose: doubling the payout
+  // alone put a bot run at level 8 by 1:26 and level 12 by 2:21 against DESIGN §8's 2:30 / 5:00, and
+  // a run that has spent the whole unlock table inside three minutes has nothing left to escalate
+  // into. At 7 the same twenty runs sit at level 8 by 1:50 and level 12 by 3:57 — both targets met
+  // with margin. Two separate twenty-run samples put level 8 at 1:50 and 1:56 and level 12 at 3:57
+  // and 3:25, which is also a fair picture of how wide the spread on a snowballing run is.
   XP_EXP: 1.45, // xpToNext(level) = ceil(XP_BASE * level ** XP_EXP)
   OFFER_COUNT: 3, // upgrades offered at a level-up the player chooses (DESIGN §6.3)
 
@@ -181,6 +215,21 @@ export const TUNING = {
   // enemy pressed against the player is near-stationary, and before this existed it played `idle`
   // while killing you.
 
+  // --- per-enemy variation (ART-STYLE "Motion and feedback", ROADMAP M5) ---
+  // 400 copies of one model moving in perfect lockstep reads as a rendering artifact rather than as
+  // a crowd. All three of these are keyed off the `seed` the enemy SoA has carried since M2, so they
+  // cost no new sim state, nothing is random per frame, and an enemy keeps the same body all run.
+  BOB_AMP: 0.055, // vertical bob, as a fraction of the actor's height. Deliberately tiny: this is the
+  // difference between a crowd and a spreadsheet, not an animation, and anything you can consciously
+  // see is too much on a model somebody else made.
+  BOB_HZ: 1.7, // bobs per second at the reference speed. Scaled by how fast the enemy is actually
+  // moving, so a jammed front rank settles instead of jogging on the spot.
+  SCALE_JITTER: 0.09, // ±9% on the actor's scale. The silhouette hierarchy in ART-STYLE is what tells
+  // a player which tier they are looking at, so this has to stay well inside the gap between tiers —
+  // grunt 1.4 and brute 2.6 are 86% apart, and ±9% cannot make one read as the other.
+  YAW_JITTER: 0.13, // radians of fixed facing offset. Enough that a rank does not present one flat
+  // wall of identical fronts; too small to look like the model is aiming somewhere else.
+
   // --- camera (ARCHITECTURE §9) ---
   CAM_OFFSET: [0, 26, 26] as const, // ~45° down, fixed world yaw, never rotates
   CAM_FOV: 45,
@@ -198,13 +247,23 @@ export const TUNING = {
 // an index into this array, so inserting a tier in the middle renumbers the live swarm. Append only.
 //
 // `actor` names the models/registry.ts entry that draws the tier — the seam a viewer replaces.
+//
+// The `xp` column roughly doubled in M5's balance pass and the whole curve moved with it (XP_BASE
+// above). The `speed` column has exactly one change, and it is a correction rather than a tuning:
+// see the runner.
 export const TIERS = [
-  { actor: 'grunt', hp: 10, speed: 3.4, contact: 6, xp: 1, entersAt: 0, weight: 10 },
-  { actor: 'runner', hp: 6, speed: 5.2, contact: 4, xp: 2, entersAt: 60, weight: 6 },
-  { actor: 'brute', hp: 60, speed: 2.2, contact: 18, xp: 6, entersAt: 120, weight: 5 },
+  { actor: 'grunt', hp: 10, speed: 3.4, contact: 6, xp: 2, entersAt: 0, weight: 10 },
+  // The runner was 5.2 through M4, against a player who moves at 7.0 — so the tier DESIGN §5 calls
+  // "faster than you", and whose entire job is to be the reason you cannot hold one direction
+  // forever, was strictly slower than the thing it was chasing. Both DESIGN §5 and PLAYER_SPEED's
+  // own comment described it correctly and the number never matched either of them. It is not a
+  // cosmetic mismatch: the first version of the balance bot simply held a heading and finished a
+  // minute of play with ZERO kills, because at 7.0 nothing in the game could reach it.
+  { actor: 'runner', hp: 6, speed: 7.6, contact: 4, xp: 3, entersAt: 60, weight: 6 },
+  { actor: 'brute', hp: 60, speed: 2.2, contact: 18, xp: 12, entersAt: 120, weight: 5 },
   // Elite weight is 0 on purpose: it never comes out of the general spawn budget, it arrives on
   // ELITE_INTERVAL after `entersAt`. A tier this expensive has to be paced, not rolled for.
-  { actor: 'elite', hp: 400, speed: 1.8, contact: 30, xp: 40, entersAt: 240, weight: 0 },
+  { actor: 'elite', hp: 400, speed: 1.8, contact: 30, xp: 60, entersAt: 240, weight: 0 },
 ] as const;
 
 export const TIER_COUNT = TIERS.length;
@@ -290,18 +349,52 @@ export const COLORS = {
   GROUND: 0x2a2f38,
   GRID: 0x3d4453,
   OUT_OF_BOUNDS: 0x1c2027,
-  PROP: 0x6b6f7a,
+  // Was 0x6b6f7a. M5's readability pass: at relative luminance 111 the props sat inside the cast's
+  // value range (the brute was 114, the elite 121) while covering far more of the screen than any
+  // actor — so the first thing the eye found in a still frame was a rock. 0x4e535d is 83, cleanly
+  // between the ground (47) and the dimmest actor, which is the band ART-STYLE always described.
+  PROP: 0x4e535d,
   FOG: 0x2a2f38, // EXACTLY the ground colour — the horizon has to vanish, not band
 
   PLAYER: 0xffe9a8,
   GRUNT: 0x7fd15a,
   RUNNER: 0x5ad1c8,
-  BRUTE: 0xd1585a,
-  ELITE: 0xc45ad1,
+  // The brute and the elite are DESATURATED against their M0 values (0xd1585a, 0xc45ad1), and only
+  // those two. ART-STYLE's rule is that the player is the highest-value pixel, and by luminance it
+  // always was — the offence ROADMAP M5 records is about ATTENTION, which is area × chroma, not
+  // value alone. A 2.6-unit brute and a 4.5-unit elite cover several times the player's screen area,
+  // so at equal saturation they out-shout a 1.7-unit character that is brighter than both. Big tiers
+  // need less chroma to read; the grunt and the runner keep all of theirs, because they are small
+  // and colour is the only channel they have.
+  BRUTE: 0xbd6265,
+  ELITE: 0xb06ebb,
   ORB: 0x8fe3ff,
   AURA: 0xffd166,
   BOLT: 0xffe9a8,
   DAMAGE: 0xff3b30,
 } as const;
 
-export const FOG_DENSITY = 0.016; // tuned so the spawn ring sits at the edge of visibility
+/**
+ * LINEAR fog, near and far, in units of distance FROM THE CAMERA.
+ *
+ * This replaces the exponential-squared fog M0 shipped, and the reason is a piece of geometry that
+ * only shows up when you sit down and measure it (ROADMAP M5). The camera is a fixed 45° rig at
+ * CAM_OFFSET, so it stands 36.8 units from the player — and the spawn ring, which is 32.2 units of
+ * GROUND distance away in every direction, is not one camera distance at all. It runs from 26.7
+ * units on the near side (closer to the camera than the player is) to 63.7 on the far side. No
+ * distance fog can put a ring like that "at the edge of visibility" all the way round, and asking
+ * for one was the M0 brief's mistake rather than a tuning failure.
+ *
+ * What a fog CAN do here, and what these two numbers buy:
+ *
+ *   - NEAR sits just beyond the player's own camera distance, so the player and the crowd fighting
+ *     them are at zero fog. Under the old exp² curve the player was ~23% blended into the fog
+ *     colour at all times, which dims the one thing ART-STYLE says must be the brightest pixel on
+ *     screen. That was a permanent, invisible tax on the whole look.
+ *   - FAR puts the far arc of the spawn ring at ~62% fogged, so enemies walking in from the top of
+ *     the screen — the direction the player is usually retreating away from and has most time to
+ *     read — genuinely fade in. Ground stays visible about 15 units past the ring, so the horizon is
+ *     a fade rather than a hard rim sitting exactly where things appear.
+ */
+export const FOG_NEAR = 40;
+export const FOG_FAR = 78;

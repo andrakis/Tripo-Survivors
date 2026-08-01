@@ -604,6 +604,34 @@ so they run in plain node with no WebGL, no canvas, no mocks:
   gate turns 720 frames of contact into 2 hits.
 - **Progression** — a scripted kill sequence produces a deterministic level and
   unlock set.
+- **Readability** (`src/readability.test.ts`, M5) — the [DESIGN §12](DESIGN.md) and
+  [ART-STYLE](ART-STYLE.md) rules, asserted *as rules* rather than as a copy of the
+  palette: the player outranks every tier in luminance, the stage stays dimmer than the
+  cast, the big tiers spend less chroma than the small ones, no two tiers share a hue,
+  the per-enemy scale jitter cannot close the gap between silhouette rungs, no prop
+  throws a blind spot deeper than three ranks, and the fog's near plane clears the
+  camera's own standoff from the player. These are the rules a viewer's imported model
+  inherits, so they outlive our own art — and two of them failed on their first run
+  because the *test* was wrong, which is how the height ladder turned out to be three
+  rungs and not four.
+
+**A played run, headless** — `scripts/balance.ts` (`npm run balance`, M5). A bot drives
+`stepGame` at a fixed 60 Hz for five simulated minutes and reports when each level landed,
+how long the run lived, and what the field looked like on the way. It asserts nothing:
+spawn angles, tier rolls and offer rolls are all `Math.random`, so it takes the median of
+several runs and prints the spread, which is the honest form of the claim. Balance
+decisions in `config.ts` cite its output.
+
+It is the reason `game.ts`'s dev seam is guarded on `typeof window` as well as on `DEV`.
+Everything under `sim/` is required to run in plain node by §2.1; that one line extends
+the same property to the file that *orders* them, and the whole harness follows from it.
+
+> **Why a bot and not a person.** "Level 8 by 2:30" is a claim about a competent run, and a
+> claim like that is either measured or it is a hope. M4 checked that the spawn curve and
+> the XP curve were within an order of magnitude of each other and treated that as
+> reassurance; a played run put the shipped numbers four levels short of the target. The
+> bot is a floor rather than a ceiling — a person plays better — so landing *ahead* of the
+> target against it is the correct side to miss on.
 
 **Browser check.** Playwright (already installed, no sudo needed). Two scripts:
 

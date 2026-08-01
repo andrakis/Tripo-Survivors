@@ -4,7 +4,10 @@
 > that field is walking toward you. Attacks fire themselves — the only verbs are
 > **where you stand** and **what you kill next**. Survive the ramp.
 
-**Status:** v1 design, locked 2026-07-29. This document is the authority on what
+**Status:** v1.1, 2026-08-01 — M5's balance pass moved the numbers in §5, §7.1 and §8,
+and every one of those moves is backed by played runs (`npm run balance`) rather than by
+arithmetic. The design itself is unchanged; the tables caught up with it.
+Originally locked 2026-07-29. This document is the authority on what
 the game *is*. [ARCHITECTURE.md](ARCHITECTURE.md) covers how it's built,
 [MODEL-PIPELINE.md](MODEL-PIPELINE.md) the asset contract, [ART-STYLE.md](ART-STYLE.md)
 the look, [ROADMAP.md](ROADMAP.md) the build order.
@@ -122,7 +125,7 @@ the game-over card next to level and kills.
 | Stat | Base | Notes |
 |---|---|---|
 | Max HP | 100 | The Max HP upgrade grants +25 and a full heal |
-| Move speed | 7.0 u/s | Meaningfully faster than a grunt (3.4) and a brute (2.2); *slower* than a runner (5.2) |
+| Move speed | 7.0 u/s | Meaningfully faster than a grunt (3.4) and a brute (2.2); *slower* than a runner (7.6) |
 | Collision radius | 0.6 | |
 | Invulnerability after a hit | 0.6 s | Flash the model; prevents a crowd deleting you in one frame |
 | Pickup radius | 3.0 u | Grows with the Magnet upgrade |
@@ -130,6 +133,13 @@ the game-over card next to level and kills.
 Speed tuning is the core balance lever. The player outruns the bulk of the swarm but
 **cannot outrun a runner**, so runners are the reason you can't simply hold one
 direction forever — they arrive first, alone, and force you to turn and clear them.
+
+> **This was aspirational until M5.** The runner shipped at 5.2 against a player at 7.0,
+> so for four milestones the tier whose whole job was to be faster than you was strictly
+> slower — and both this table and `config.ts` described it correctly the entire time.
+> It is not a cosmetic mismatch: with nothing in the game able to catch the player, a
+> straight line beats the whole thing, and the first version of the balance bot proved it
+> by finishing a minute of play with **zero kills**. Now 7.6.
 
 ### 5.1 The dash
 
@@ -282,10 +292,15 @@ Rules that follow from that:
 
 | Tier | HP | Speed | Contact dmg | XP | Enters at | Read |
 |---|---|---|---|---|---|---|
-| **Grunt** | 10 | 3.4 | 6 | 1 | 0:00 | The mass. Dies to one aura pulse plus change. |
-| **Runner** | 6 | 5.2 | 4 | 2 | 1:00 | Fragile, faster than you. Arrives alone and early. |
-| **Brute** | 60 | 2.2 | 18 | 6 | 2:00 | Slow wall of HP. Survives to reach you; punishes standing. |
-| **Elite** | 400 | 1.8 | 30 | 40 | 4:00 | Rare. A moving hazard you route around, not through. |
+| **Grunt** | 10 | 3.4 | 6 | 2 | 0:00 | The mass. Dies to one aura pulse plus change. |
+| **Runner** | 6 | 7.6 | 4 | 3 | 1:00 | Fragile, faster than you. Arrives alone and early. |
+| **Brute** | 60 | 2.2 | 18 | 12 | 2:00 | Slow wall of HP. Survives to reach you; punishes standing. |
+| **Elite** | 400 | 1.8 | 30 | 60 | 4:00 | Rare. A moving hazard you route around, not through. |
+
+The **XP** column roughly doubled in M5's balance pass, and the curve in §8 moved with it
+— see there for the played-run numbers behind both. Note that HP is deliberately *not*
+monotonic: the runner is more fragile than the grunt. It is a sidestep rather than a rung,
+which is what makes the minute mark a change of kind and not of magnitude.
 
 Four tiers is the ceiling for v1 — one per shape a viewer might want to model, and
 few enough that the tutorial can show importing all of them.
@@ -328,27 +343,45 @@ prototype. It is also the reason the arena has obstacles at all.
 ## 8. Progression
 
 ```
-xpToNext(level) = ceil(5 * level ^ 1.45)
+xpToNext(level) = ceil(7 * level ^ 1.45)
 ```
 
 | Level | XP for next | Cumulative |
 |---|---|---|
-| 1 | 5 | 5 |
-| 2 | 14 | 19 |
-| 3 | 25 | 44 |
-| 4 | 38 | 82 |
-| 5 | 52 | 134 |
-| 8 | 102 | 389 |
-| 12 | 184 | 997 |
+| 1 | 7 | 7 |
+| 2 | 20 | 27 |
+| 3 | 35 | 62 |
+| 4 | 53 | 115 |
+| 5 | 73 | 188 |
+| 8 | 143 | 544 |
+| 12 | 257 | 1396 |
 
 The **Cumulative** column is the total XP spent by the time that row's level-up is
-paid for — so reaching level 8 costs the level 7 row, 287. (These were a few points
-high in the first draft; the formula is the specification and the table is now the
-formula's output, checked in `sim/progression.test.ts`.)
+paid for — so *reaching* level 8 costs everything up to the level 7 row, 401. (These
+were a few points high in the first draft; the formula is the specification and the
+table is its output, checked in `sim/progression.test.ts` — which is also why both
+moved together when M5 raised `XP_BASE`.)
 
 Tuned against the spawn curve so a competent run hits **level 8 around 2:30** and
 **level 12 around 5:00** — i.e. the full unlock table is seen in a normal run, which
 matters because the table *is* the tutorial's demonstration of a progression system.
+
+> **M5 made this real.** Through M4 it was arithmetic: the spawn curve and the XP curve
+> were checked to be within an order of magnitude of each other, which turned out to be
+> the wrong kind of reassurance. Driven by a bot for five simulated minutes
+> (`npm run balance`), the shipped numbers put a competent run at **level 5 at 5:00** —
+> four levels and most of the unlock table short of the target, and the whole reason was
+> the *climb*, not the ceiling. Handed a level-13 loadout at t=0 the same bot cleared 82%
+> of the field at 4.9 kills a second; on the level-1 kit it cleared 20% at 0.31, and never
+> escaped that. Below the threshold nothing snowballs and the run simply stalls.
+>
+> The fix was at the bottom of the curve, where the problem was: tier payouts roughly
+> doubled (§7.1) and `XP_BASE` went 5 → 7 to stop the top of the run running away. Twenty
+> bot runs now land level 8 at about 1:55 and level 12 at about 3:40 (medians over two
+> twenty-run samples: 1:50/3:57 and 1:56/3:25 — a snowballing run has a wide spread, and
+> pretending otherwise from one sample would be the same mistake in a smaller size). That is
+> ahead of target rather than behind it, which is the correct side to miss on, because the
+> bot is a floor and a person is not.
 
 **XP orbs** drop at the death position, are worth their tier's XP, and are pulled
 toward the player once inside the magnet radius (accelerating, so a pickup feels

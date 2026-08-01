@@ -11,7 +11,7 @@
 import { useRef } from 'react';
 import { useFrame } from '@react-three/fiber';
 import * as THREE from 'three';
-import { COLORS } from '../config';
+import { COLORS, TUNING } from '../config';
 import { game } from '../game';
 
 /** Lifted off the ground plane. Enough to beat z-fighting at this camera distance, low enough that
@@ -35,9 +35,19 @@ export function AuraRing() {
     // Unit geometry scaled to the live radius, so M4 growing the aura is a number changing in the
     // sim and nothing at all changing here.
     group.current.position.set(p.x, LIFT, p.z);
-    group.current.scale.setScalar(c.auraR);
 
-    const f = c.auraFlare;
+    // A level-up burst overshoots the ring outward and fades, so the two signals differ in SHAPE and
+    // not only in brightness — which is what keeps them apart when a level-up happens to land on the
+    // same frame as an ordinary pulse. Squared, so the ring springs out and eases back rather than
+    // sliding linearly to a stop.
+    const burst = c.auraBurst;
+    group.current.scale.setScalar(
+      c.auraR * (1 + TUNING.AURA_BURST_OVERSHOOT * burst * burst),
+    );
+
+    // The burst also drives the brightness, taking the maximum rather than adding: at a level-up the
+    // aura pulses too, and summing them would clip both to opaque and lose the shape entirely.
+    const f = Math.max(c.auraFlare, burst);
     fill.current.opacity = FILL_MIN + (FILL_MAX - FILL_MIN) * f;
     rim.current.opacity = RIM_MIN + (RIM_MAX - RIM_MIN) * f;
   });

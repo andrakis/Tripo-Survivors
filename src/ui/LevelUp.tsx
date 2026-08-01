@@ -1,14 +1,21 @@
-// The level-up toast. A toast, and nothing else — **no modal and no pause** (DESIGN §11).
+// The level-up toast: the announcement for a level that is NEWS rather than a question.
 //
-// This is the one place the "no card draft" decision becomes visible, so it is worth stating: a
-// level-up in this game is news, not a decision. The unlock table is fixed and ordered, so there is
-// nothing to choose and therefore no reason to stop the world — and the swarm arriving while you
-// read it is the point. That also makes this component trivially safe: it subscribes to the 10 Hz
-// store like every other DOM overlay and never touches the sim.
+// Since M4a there are two kinds of level-up (DESIGN §6.3). A weapon level is news — the table is
+// fixed and ordered, so there is nothing to choose and therefore no reason to stop the world, and
+// the swarm arriving while you read it is the point. That is this component. A stat level asks a
+// question, and asking one mid-fight would make it a reflex test, so it pauses and draws three
+// cards instead — ui/LevelUpChoice.tsx. Both end by calling `announce`, so a card the player takes
+// also gets a toast here.
+//
+// Either way this stays trivially safe: it subscribes to the 10 Hz store like every other DOM
+// overlay and never touches the sim.
 //
 // The world-side half of the same event lives elsewhere: the camera shake (scene/CameraRig.tsx) and
-// the aura flare (set by sim/progression.ts). Feedback that only happens in the HUD is feedback the
-// player misses, because during a fight they are not looking at the HUD.
+// the aura BURST (`combat.auraBurst`, set by sim/progression.ts and drawn by scene/AuraRing.tsx).
+// Feedback that only happens in the HUD is feedback the player misses, because during a fight they
+// are not looking at the HUD — which is exactly what went wrong with the flare through M4, when the
+// world-side signal was set on the field the aura's own pulse writes twice a second and was
+// therefore invisible.
 
 import { useUi } from '../store';
 
