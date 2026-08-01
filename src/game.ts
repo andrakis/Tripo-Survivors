@@ -35,7 +35,7 @@ import {
   type Progression,
 } from './sim/progression';
 import { overlapsObstacle } from './sim/world';
-import { actorReport } from './models/loader';
+import { actorReport, getActor } from './models/loader';
 import { sampleInput, type InputVector } from './input';
 import { useUi, type OfferCard } from './store';
 
@@ -271,7 +271,8 @@ if (import.meta.env.DEV) {
     __overlapsProp: (x: number, z: number, r: number) => boolean;
     __grantXp: (amount: number) => number;
     __choose: (index: number) => boolean;
-    __models: () => Record<string, { fallback: boolean; textured: boolean; url?: string }>;
+    __models: () => Record<string, unknown>;
+    __actor: (id: string) => unknown;
   };
   w.__game = game;
   // Levels 2..12 are minutes of real play apart by design, and a verification run that has to earn
@@ -296,6 +297,7 @@ if (import.meta.env.DEV) {
   // Which actors resolved to a GLB and which fell back to their primitive. The verification run
   // asserts on this rather than trying to tell a monster from a cube in a screenshot.
   w.__models = actorReport;
+  w.__actor = getActor as unknown as (id: string) => unknown;
   w.__reset = () => resetGame(game);
   w.__spawn = (count, tier = 0, radius = 30) => {
     for (let i = 0; i < count; i++) {

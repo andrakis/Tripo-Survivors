@@ -139,7 +139,11 @@ export const TUNING = {
   // the player into one white mass a quarter of all frames — which hides the player inside it and
   // inverts the one rule the look rests on (DESIGN §12 rule 1). At 0.45 the hit still reads and the
   // tier colour still reads underneath it.
-  DEATH_TIME: 0.26, // scale-punch duration for a death marker, then it is gone
+  DEATH_TIME: 0.85, // how long a death marker lives. Was 0.26 when the only death was a scale-punch
+  // on a cube; an animated actor plays its `die` clip over this window instead, and a quarter of a
+  // second is not enough of a fall to read as one. The punch curve is normalised over it either way,
+  // so the primitive death slowed down too — which turns out to suit it. At the late-game kill rate
+  // (~40/s) this is ~34 concurrent markers against MAX_DEATHS.
   MAX_DEATHS: 96, // concurrent death markers. At the late-game kill rate ~40/s × DEATH_TIME is ~11,
   // so this is slack for a level-up burst rather than a number that binds.
 
@@ -156,6 +160,26 @@ export const TUNING = {
   XP_BASE: 5,
   XP_EXP: 1.45, // xpToNext(level) = ceil(XP_BASE * level ** XP_EXP)
   OFFER_COUNT: 3, // upgrades offered at a level-up the player chooses (DESIGN §6.3)
+
+  // --- vertex animation (MODEL-PIPELINE §6) ---
+  VAT_FPS: 24, // bake rate. Every frame costs vertexCount texels in two textures AND a slice of the
+  // load-time bake, so this is the milestone's main cost dial. 24 is film rate and the crowd is
+  // small on screen; 30 looked no different and cost 25% more of both.
+  VAT_DIE_FROM: 2.7, // where in the `die` clip the bake starts. Tripo's 5.6 s `defeat` preset is 3 s
+  // of staggering, the actual FALL at t≈2.9-3.4, then 2 s of lying still — measured from the Hip
+  // rotation track, which swings from ~20° to 87° across exactly that window. Baking from 0 spends
+  // the whole death marker on the stagger and no body ever hits the ground.
+  VAT_DIE_TRIM: 1.0, // seconds of the clip to bake from VAT_DIE_FROM: the fall, plus enough of the
+  // settle that the held final pose is genuinely flat. Safe to cut because a one-shot has no seam.
+  VAT_IDLE_SPEED: 0.4, // below this an enemy plays `idle`...
+  VAT_WALK_SPEED: 2.6, // ...below this, `walk`; above it, `run`. Between a grunt's 3.4 and a brute's
+  // 2.2, so the two tiers move differently without either one being told which clip to use.
+  VAT_ATTACK_R: 2.2, // within this of the player, an enemy plays an attack instead. Contact damage
+  // reaches PLAYER_R + UNIT_R = 1.1 and separation stacks ranks ~1.1 apart, so 2.2 catches the rank
+  // that is actually hurting you plus the one shoving in behind it — the crowd at the aura's edge
+  // punches, the crowd further out still runs. Distance beats the speed thresholds on purpose: an
+  // enemy pressed against the player is near-stationary, and before this existed it played `idle`
+  // while killing you.
 
   // --- camera (ARCHITECTURE §9) ---
   CAM_OFFSET: [0, 26, 26] as const, // ~45° down, fixed world yaw, never rotates

@@ -191,9 +191,21 @@ and the same approach is available here if we want a build-time decimation step.
 Note the ceilings are soft — exceeding them degrades framerate, it doesn't break.
 The loader warns and keeps going.
 
-## 6. Stage 3 — animation (VAT)
+## 6. Stage 3 — animation (VAT) — ✅ shipped (M6b)
 
-Deferred to M6, but the shape of it is already settled because Breach has shipped it.
+**Turning it on is one more line.** A rigged GLB with Tripo's autorig clips, plus:
+
+```diff
+  grunt: { primitive: ..., url: '/models/grunt.glb',
++          animated: true,
+           height: 1.4, scale: 1.0, yOffset: 0.7, tint: COLORS.GRUNT },
+```
+
+At load, a Web Worker bakes the clips into Vertex Animation Textures behind the
+`LOADING MODELS` splash (~1 second for the real grunt), and the crowd animates. If the
+GLB has no skeleton, or no clip matches, the actor stays on its static mesh with a
+console line saying why — the same degrade-don't-break ladder as everything else:
+**VAT → static GLB → primitive.**
 
 **Why not skeletal animation?** Per-instance skeletal skinning costs CPU and a draw
 call *per instance*. It's the right answer for a handful of high-poly characters; it
@@ -201,31 +213,58 @@ does not survive 400, let alone Breach's 20,000. Breach measured the switch away
 a skeletal pool as SIM 30 → SIM 88 fps.
 
 **Vertex Animation Textures** bake each clip's per-vertex motion into a texture
-sampled in the vertex shader. Animation then costs essentially nothing per instance —
-no bones, no per-frame CPU work, one instanced draw for the whole crowd. Clip choice
-is driven per-instance from data the sim already has (speed → run/idle, a death timer
-→ die/dead), so there is no animation state machine to write.
+sampled in the vertex shader (`src/models/vatCore.ts`, ported from Breach's bake core;
+`src/models/vat.ts`, the WebGL runtime). Animation then costs essentially nothing per
+instance — no bones, no per-frame CPU work, one instanced draw for the whole crowd.
+The cost is VRAM proportional to `vertices × frames` — *not* to instance count. The
+real grunt bakes 593 frames at 24 fps into ~17 MB.
 
-The cost is VRAM proportional to `vertices × frames` — *not* to instance count.
+**Clip choice is sim data, not a state machine.** Each instance carries one float —
+its current VAT row — written per frame by `scene/Swarm.tsx` from numbers the sim
+already keeps:
 
-**Runtime baking.** Breach ships the ~1–4 MB source `.glb` and bakes the VAT
-**in-browser at load** in a worker, rather than shipping a ~100 MB texture. The bake
-core is environment-agnostic so the offline CLI and the browser worker produce
-byte-identical output:
+| Condition | Clip |
+|---|---|
+| within `VAT_ATTACK_R` (2.2 u) of the player | `attack` (variant by seed) |
+| speed < 0.4 u/s | `idle` |
+| speed < 2.6 u/s | `walk` |
+| otherwise | `run` |
+| death marker | `die`, once over its lifetime, holding the final pose |
 
-- [Breach/src/render/vatCore.js](../../Breach/src/render/vatCore.js) — the pure-maths bake
-- [Breach/src/vat-bake.worker.js](../../Breach/src/vat-bake.worker.js) — the browser wrapper
-- [Breach/docs/ANIMATED-MODELS-PLAN.md](../../Breach/docs/ANIMATED-MODELS-PLAN.md) — the full spec
+**Distance is tested before speed, and that ordering is the whole point.** An enemy
+pressed against the player is jammed by separation and barely moving, so on the speed
+thresholds alone it plays `idle` — standing perfectly still while killing you. Contact
+damage reaches 1.1 u and ranks stack ~1.1 u apart, so 2.2 u catches the rank actually
+hurting you plus the one shoving in behind it; the crowd at the aura's edge punches
+while the crowd beyond it still runs.
 
-For this project that means the animated-model tutorial can be *"export a rigged GLB
-from Tripo with its autorig clips, put it in `public/models/`, name it in the
-registry"* — with the bake invisible behind a load screen. Which is exactly the story
-worth telling.
+Attack **variants** are picked by the enemy's `seed` — the per-enemy random the SoA has
+carried since M2 — so each one keeps its own combo instead of reshuffling every frame,
+and a wall of enemies isn't throwing the same punch in unison.
 
-**Extra contract requirements at stage 3:** the GLB must be rigged (Tripo's bipedal
-autorig is the intended source), carry named clips, and be exported **texture-free and
-uncompressed** for the baker. Clip names are matched by substring — `run`, `walk`,
-`idle`, `attack`, `die` — the same heuristic Breach's `isLoopClip` uses.
+**Clips the bake asks for:** `idle`, `walk`, `run` (loops), `attack` ×3 (loops — they
+play for as long as an enemy stays in range, and a wrap-around on a 2-second combo is
+invisible where a clamped final pose frozen mid-punch would not be), and `defeat`/`die`
+(one-shot). Each spec can list **alternate names**, tried in order, so one table covers
+Tripo's `box_01` and a hand-authored `Attack`. The second and third attack variants are
+marked optional: a rig with one attack gets one, with nothing reported missing.
+Duplicates (Tripo exports every clip twice) are taken once.
+
+### 6.1 Two things Tripo's autorig output *will* do, and what happens
+
+- **Locomotion clips carry root motion.** The grunt's `run` translates its Hip bone
+  2.3 units — 2.7× the model's own height — across the floor. In a game where the sim
+  owns every position that is wrong twice over: the animation would carry the body away
+  from where the game says it stands, and the vertices Blender parked on a
+  `neutral_bone` *don't* travel, so the mesh tears into spikes. The baker pins any bone
+  whose translation strays more than 15% of model height from its bind pose; rotations
+  — where a biped's actual motion lives — pass through untouched. The crowd runs on
+  the spot, and the sim does the moving.
+- **The `defeat` preset is mostly not dying.** 5.6 seconds: three of staggering, half a
+  second of actually falling at t≈3, two of lying still. Baked whole, a death marker's
+  0.85 s window shows only the stagger and no body ever hits the ground. The clip spec
+  takes a **window** (`from`/`trim`), and the registry bakes `defeat` from 2.7 s for
+  1.0 s: the fall, ending flat.
 
 ## 7. Folder layout
 

@@ -12,7 +12,34 @@
 
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
+import { TUNING } from '../config';
 import { ACTORS, type ActorId, type ActorModel } from './registry';
+import { assembleVat, attachVatVertexIds, makeVatMaterial, type Vat } from './vat';
+import type { ClipSpec, VatClip } from './vatCore';
+
+/**
+ * The clips the game asks every animated actor for, and what it does with them.
+ *
+ * Substring matches, so one table covers Tripo's `Armature|preset:biped:run` and a hand-authored
+ * `Run` alike. A missing clip is reported and skipped — the runtime falls back to another slot rather
+ * than refusing to animate, so a model with only a run cycle still runs.
+ */
+const CLIP_SPECS: ClipSpec[] = [
+  { as: 'idle', match: 'idle', loop: true },
+  { as: 'walk', match: 'walk', loop: true },
+  { as: 'run', match: 'run', loop: true },
+  // Attacks. `box_*` is what Tripo's autorig presets are called; `attack` covers hand-named rigs.
+  // Baked as LOOPS even though the heuristic calls an attack a one-shot, because the runtime plays
+  // them while an enemy stays in range — a crowd keeps punching, and a wrap-around hitch on a
+  // 2-second combo is invisible where a clamped final pose (frozen mid-punch) would not be.
+  // The variants are optional: a rig with one attack gets one, and nothing is reported missing.
+  { as: 'attack', match: ['box_01', 'attack'], loop: true },
+  { as: 'attack2', match: ['box_02'], loop: true, optional: true },
+  { as: 'attack3', match: ['box_03'], loop: true, optional: true },
+  // `defeat` is Tripo's name for it. The window skips the preset's 3 s of staggering and bakes the
+  // fall itself — see VAT_DIE_FROM in config.ts for the measurement behind the number.
+  { as: 'die', match: ['defeat', 'die', 'death'], loop: false, from: TUNING.VAT_DIE_FROM, trim: TUNING.VAT_DIE_TRIM },
+];
 
 /**
  * Triangle budgets from MODEL-PIPELINE §5, as `tris × instances`. Exceeding one is a **warning, not
@@ -41,6 +68,15 @@ export interface ResolvedActor extends ActorModel {
   material: THREE.Material | null;
   /** True when a GLB loaded and brought a base-colour texture with it. */
   textured: boolean;
+  /**
+   * The baked Vertex Animation Texture, when `animated` was set and the bake succeeded.
+   *
+   * Null is the normal case and not a failure: a static import draws exactly as it did before M6b.
+   * When it is present the renderer draws `vatMaterial` instead of `material` and writes an `aVatRow`
+   * per instance — see scene/Swarm.tsx.
+   */
+  vat: Vat | null;
+  vatMaterial: THREE.Material | null;
   /** True when the primitive is being drawn — either no `url`, or the GLB was rejected. */
   fallback: boolean;
   /** The registry's `yaw`, defaulted. Narrowed to non-optional so renderers can add it blindly. */
@@ -81,6 +117,8 @@ function primitiveActor(id: ActorId): ResolvedActor {
     geometry: model.primitive(),
     material: null,
     textured: false,
+    vat: null,
+    vatMaterial: null,
     fallback: true,
     flashBase: new THREE.Color(model.tint),
     flashHot: new THREE.Color(0xffffff),
@@ -122,10 +160,10 @@ function meshesIn(root: THREE.Object3D): THREE.Mesh[] {
  * still reported, since a model authored around its centre usually means the pivot is wrong in the
  * source file and the viewer will want to know before they rig it.
  */
-function normalise(geometry: THREE.BufferGeometry, target: number, url: string): boolean {
+function normalise(geometry: THREE.BufferGeometry, target: number, url: string): THREE.Matrix4 | null {
   geometry.computeBoundingBox();
   const box = geometry.boundingBox;
-  if (!box) return false;
+  if (!box) return null;
 
   const size = new THREE.Vector3();
   const centre = new THREE.Vector3();
@@ -134,7 +172,7 @@ function normalise(geometry: THREE.BufferGeometry, target: number, url: string):
 
   if (!(size.y > 1e-6) || !Number.isFinite(size.y)) {
     say('warn', url, `height measured ${size.y.toFixed(4)} — no vertical extent, falling back to the primitive.`);
-    return false;
+    return null;
   }
 
   if (Math.abs(box.min.y) > size.y * 0.05) {
@@ -146,19 +184,28 @@ function normalise(geometry: THREE.BufferGeometry, target: number, url: string):
     );
   }
 
+  // Returned as a matrix as well as applied, because the VAT path has to reproduce EXACTLY this
+  // transform on its baked frames (models/vat.ts `assembleVat`). If the two ever disagree the model
+  // changes size the instant it starts animating.
   const k = target / size.y;
   geometry.translate(-centre.x, -centre.y, -centre.z);
   geometry.scale(k, k, k);
   geometry.computeBoundingBox();
   geometry.computeBoundingSphere();
-  return true;
+  return new THREE.Matrix4().makeScale(k, k, k).multiply(
+    new THREE.Matrix4().makeTranslation(-centre.x, -centre.y, -centre.z),
+  );
 }
 
 /**
  * Load and validate one GLB. Resolves to a ResolvedActor either way — the GLB's on success, the
  * primitive's on any failure at all.
  */
-async function loadOne(id: ActorId, loader: GLTFLoader): Promise<ResolvedActor> {
+async function loadOne(
+  id: ActorId,
+  loader: GLTFLoader,
+  onProgress: (frac: number) => void,
+): Promise<ResolvedActor> {
   const model = ACTORS[id];
   const url = model.url!;
   const primitive = primitiveActor(id);
@@ -208,7 +255,8 @@ async function loadOne(id: ActorId, loader: GLTFLoader): Promise<ResolvedActor> 
     geometry.computeVertexNormals();
   }
 
-  if (!normalise(geometry, model.height, url)) return primitive;
+  const norm = normalise(geometry, model.height, url);
+  if (!norm) return primitive;
 
   const index = geometry.getIndex();
   const tris = (index ? index.count : geometry.getAttribute('position').count) / 3;
@@ -241,6 +289,16 @@ async function loadOne(id: ActorId, loader: GLTFLoader): Promise<ResolvedActor> 
       `${textured ? ', textured' : ''}.`,
   );
 
+  const rigged = (mesh as THREE.SkinnedMesh).isSkinnedMesh === true;
+  const animated =
+    model.animated && !rigged
+      ? (say('warn', url, 'marked `animated` but the GLB has no skeleton — staying static.'), false)
+      : !!model.animated;
+
+  const baked = animated
+    ? await bakeVat(id, url, geometry, material, norm.clone().multiply(mesh.matrixWorld), onProgress)
+    : null;
+
   return {
     ...model,
     id,
@@ -248,6 +306,8 @@ async function loadOne(id: ActorId, loader: GLTFLoader): Promise<ResolvedActor> 
     geometry,
     material,
     textured,
+    vat: baked?.vat ?? null,
+    vatMaterial: baked?.vatMaterial ?? null,
     fallback: false,
     // A textured model keeps its own colours and brightens on a hit; an untextured one wears the
     // tier tint. See the field docs on ResolvedActor.
@@ -257,14 +317,96 @@ async function loadOne(id: ActorId, loader: GLTFLoader): Promise<ResolvedActor> 
 }
 
 /**
+ * Run the VAT bake for one actor in a worker, and assemble the result.
+ *
+ * Returns null on ANY failure, which leaves the actor on its static mesh — the same
+ * degrade-don't-break rule the whole module runs on, one rung further up the ladder: VAT falls back
+ * to static GLB, static GLB falls back to primitive.
+ *
+ * `transform` must be the same world × normalisation matrix baked into the static geometry, or the
+ * model changes size the instant it starts animating.
+ */
+async function bakeVat(
+  id: ActorId,
+  url: string,
+  geometry: THREE.BufferGeometry,
+  material: THREE.Material,
+  transform: THREE.Matrix4,
+  onProgress: (frac: number) => void,
+): Promise<{ vat: Vat; vatMaterial: THREE.Material } | null> {
+  const worker = new Worker(new URL('./vat-bake.worker.ts', import.meta.url), { type: 'module' });
+  try {
+    const baked = await new Promise<{
+      meta: { vertexCount: number; totalFrames: number; clips: VatClip[]; missing: string[]; sourceClips: string[] };
+      pos: Float32Array;
+      nrm: Float32Array;
+    }>((resolve, reject) => {
+      worker.onmessage = (e) => {
+        const m = e.data;
+        if (m.type === 'progress') onProgress(m.done / m.total);
+        else if (m.type === 'done') resolve(m);
+        else if (m.type === 'error') reject(new Error(m.message));
+      };
+      worker.onerror = (ev) => reject(new Error(ev.message || 'vat bake worker failed'));
+      worker.postMessage({ url, fps: TUNING.VAT_FPS, specs: CLIP_SPECS });
+    });
+
+    const { meta, pos, nrm } = baked;
+    // The worker baked from the same GLB this actor's draw geometry came from, so a mismatch means
+    // the two picked different meshes — the VAT rows would address the wrong vertices and the model
+    // would render as an exploded cloud. Refuse rather than draw that.
+    if (meta.vertexCount !== geometry.attributes.position.count) {
+      say(
+        'warn',
+        url,
+        `VAT baked ${meta.vertexCount} vertices but the draw geometry has ` +
+          `${geometry.attributes.position.count} — staying static.`,
+      );
+      return null;
+    }
+    if (meta.missing.length) {
+      say('info', url, `no clip matched [${meta.missing.join(', ')}] — those slots fall back to another.`);
+    }
+
+    const vat = assembleVat({ ...meta, pos, nrm }, transform);
+    attachVatVertexIds(geometry);
+    say(
+      'info',
+      url,
+      `animated: ${meta.clips.map((c) => `${c.name}×${c.count}`).join(' ')} = ${vat.totalFrames} frames, ` +
+        `${(vat.bytes / 1024 / 1024).toFixed(1)} MB of VAT.`,
+    );
+    return { vat, vatMaterial: makeVatMaterial(material, vat) };
+  } catch (err) {
+    say('warn', url, `VAT bake failed (${(err as Error)?.message ?? err}) — the model stays static.`);
+    return null;
+  } finally {
+    worker.terminate();
+    void id;
+  }
+}
+
+/**
  * Resolve every actor, loading in parallel. Called once, before the app renders.
  *
  * It never rejects. An unhandled rejection here would leave the page blank, which is the one outcome
  * MODEL-PIPELINE §1 rules out — the whole point is that a broken asset costs you a model, not a game.
  */
-export async function loadActors(): Promise<void> {
+export async function loadActors(onProgress?: (frac: number, label: string) => void): Promise<void> {
   const loader = new GLTFLoader();
   const ids = Object.keys(ACTORS) as ActorId[];
+
+  // Progress is reported per actor and averaged, so one slow bake does not make the bar jump to 100%
+  // and sit there. Only actors that actually do work contribute.
+  const working = ids.filter((id) => ACTORS[id].url);
+  const share = new Map<ActorId, number>(working.map((id) => [id, 0]));
+  const publish = (label: string) => {
+    if (!onProgress || !working.length) return;
+    let sum = 0;
+    for (const v of share.values()) sum += v;
+    onProgress(sum / working.length, label);
+  };
+  publish('loading models');
 
   await Promise.all(
     ids.map(async (id) => {
@@ -272,19 +414,45 @@ export async function loadActors(): Promise<void> {
         resolved.set(id, primitiveActor(id));
         return;
       }
+      const step = (frac: number) => {
+        share.set(id, Math.min(1, frac));
+        publish(ACTORS[id].animated ? `baking ${id}` : `loading ${id}`);
+      };
       try {
-        resolved.set(id, await loadOne(id, loader));
+        resolved.set(id, await loadOne(id, loader, step));
       } catch (err) {
         console.warn(`[models] ${id}: unexpected error while resolving — falling back to the primitive.`, err);
         resolved.set(id, primitiveActor(id));
       }
+      share.set(id, 1);
+      publish('ready');
     }),
   );
 }
 
+export interface ActorReport {
+  fallback: boolean;
+  textured: boolean;
+  url?: string;
+  animated: boolean;
+  clips: string[];
+  frames: number;
+  vatMB: number;
+}
+
 /** Dev-only summary, so the verification harness can assert on what actually resolved. */
-export function actorReport(): Record<string, { fallback: boolean; textured: boolean; url?: string }> {
-  const out: Record<string, { fallback: boolean; textured: boolean; url?: string }> = {};
-  for (const [id, a] of resolved) out[id] = { fallback: a.fallback, textured: a.textured, url: a.url };
+export function actorReport(): Record<string, ActorReport> {
+  const out: Record<string, ActorReport> = {};
+  for (const [id, a] of resolved) {
+    out[id] = {
+      fallback: a.fallback,
+      textured: a.textured,
+      url: a.url,
+      animated: !!a.vat,
+      clips: a.vat ? a.vat.clips.map((c) => c.name) : [],
+      frames: a.vat ? a.vat.totalFrames : 0,
+      vatMB: a.vat ? Number((a.vat.bytes / 1024 / 1024).toFixed(2)) : 0,
+    };
+  }
   return out;
 }

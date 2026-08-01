@@ -16,6 +16,11 @@ export function App() {
         camera={{ fov: TUNING.CAM_FOV, position: [...TUNING.CAM_OFFSET], near: 0.5, far: 400 }}
         dpr={[1, 2]}
         gl={{ antialias: true }}
+        // Dev-only debug seam, like window.__game: the verification run walks the scene graph to
+        // assert on renderer state the sim cannot see (e.g. that the VAT row attribute is live).
+        onCreated={(state) => {
+          if (import.meta.env.DEV) (window as unknown as { __r3f: unknown }).__r3f = state;
+        }}
       >
         <Scene />
         <FpsMeter />

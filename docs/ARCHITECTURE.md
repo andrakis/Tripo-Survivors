@@ -51,6 +51,9 @@ src/
     progression.ts       XP curve, weapon grants, the upgrade choice pool
   models/registry.ts   THE TUTORIAL SEAM — see MODEL-PIPELINE.md
   models/loader.ts     GLB load + contract validation + normalisation, primitive fallback
+  models/vatCore.ts    VAT bake core: pure THREE maths, worker- and test-runnable
+  models/vat-bake.worker.ts  runtime bake, off the main thread, drives the load splash
+  models/vat.ts        VAT runtime: DataTextures + GLSL injection + row lookup
   store.ts             zustand: human-rate UI state ONLY
   scene/               R3F components. Read state, write matrices. No game logic.
     Scene · Ground · Obstacles · Swarm · Player · Projectiles · Orbs · Orbiter · Boosts ·
@@ -493,6 +496,14 @@ Per-population notes:
   *multiplies* the two and a tinted material could only ever darken an instance.
   Death markers ride in these same meshes, appended after the live enemies of their
   tier, so capacity is `MAX_ENEMIES + MAX_DEATHS`.
+
+  An **animated** tier (MODEL-PIPELINE §6) draws the same mesh with the VAT material
+  and one extra instanced float, `aVatRow` — the texture row (frame) each enemy is on,
+  chosen per frame from the sim's own numbers: speed thresholds pick idle/walk/run,
+  and a death marker plays `die` over its lifetime instead of the primitive's
+  scale-punch. The vertex shader replaces position and normal from the VAT textures
+  *before* the instance matrix applies, so facing, capacity and the colour path above
+  are untouched.
 - **Player** — a single mesh, not instanced; the only actor the camera gets close to.
   Drawn **twice**: the lit model, plus an unlit silhouette at `renderOrder` 999 with
   `depthTest: false`. Without the second pass the player is completely hidden by an

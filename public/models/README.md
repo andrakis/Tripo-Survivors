@@ -91,6 +91,34 @@ Already handled. glTF's default `metallicFactor` is **1.0**, and this game has n
 environment map for a metal surface to reflect — so a metallic export renders black. The
 loader forces `metalness = 0` and logs an `info` line saying so.
 
+## Animating it
+
+If your GLB is **rigged** — export from Tripo with its autorig and preset clips — one
+more line bakes the clips into a vertex-animation texture at load and the whole crowd
+animates:
+
+```ts
+grunt: { ..., url: '/models/grunt.glb', animated: true },
+```
+
+The game looks for clips named (loosely — Tripo's `Armature|preset:biped:run` just
+works):
+
+| Wanted | Tripo calls it | Used when |
+|---|---|---|
+| `idle` / `walk` / `run` | same | by how fast the enemy is moving |
+| attack ×3 | `box_01`, `box_02`, `box_03` | within 2.2 units of the player |
+| `die` | `defeat_03` | the enemy has just been killed |
+
+Nothing to configure: which clip plays comes out of the simulation. Only the first
+attack is needed — the other two are used if they exist, and each enemy keeps its own
+so a crowd isn't punching in unison.
+
+Two Tripo quirks are handled for you: baked-in root motion is pinned (your model runs
+on the spot, the game moves it), and the long `defeat` preset is cut down to the part
+where the body actually falls. If the file has no skeleton or no matching clips, the
+model simply stays static and the console says why.
+
 ## Reading the console
 
 Every message names your file first:

@@ -8,9 +8,11 @@ See [DESIGN.md](DESIGN.md) for the systems these milestones serve and
 [ARCHITECTURE.md](ARCHITECTURE.md) for how they're built.
 
 **Status:** M0–M4 done (M0/M1 2026-07-29, M2 and M3 2026-07-30, M4 and the M4a gameplay
-pass 2026-07-31). **M6a shipped early** (2026-07-31) because a model existed to import —
-the loader is complete and `grunt.glb` is in the game; the rest of the cast is one
-registry line each once the models exist. M5 (escalation + look) is next.
+pass 2026-07-31). **M6 shipped early and out of order** because a model existed to
+import: M6a (static GLTF, 2026-07-31) and M6b (VAT animation, 2026-08-01) are both code
+complete, with `grunt.glb` loaded, textured and animated in the game. The rest of the
+cast is deliberately left as the tutorial's exercise — one registry line per model. M5
+(escalation + look) is next.
 
 ---
 
@@ -496,17 +498,67 @@ other six models.
   `game` and `GameLoop` was stepping another. `game.ts` now accepts its own hot update and
   immediately invalidates, forcing a full reload. Cost: a reload per sim edit. Worth it.
 
-### 6b — VAT animation
+### 6b — VAT animation ✅ code done (2026-08-01) · cast blocked on assets
 
-- [ ] Port [vatCore.js](../../Breach/src/render/vatCore.js) +
-      [vat-bake.worker.js](../../Breach/src/vat-bake.worker.js); runtime bake behind
-      a load screen.
-- [ ] Clip selection driven from existing sim data (speed → run/idle, death timer →
-      die/dead). No animation state machine.
-- [ ] Rigged Tripo exports for the enemy tiers.
+- [x] `src/models/vatCore.ts` — the bake core, ported from
+      [Breach](../../Breach/src/render/vatCore.js) into typed, testable form (12 vitest
+      cases over a hand-built two-bone rig with arithmetic answers). Minus Breach's
+      meshoptimizer decimation: 400 × 807 tris needs no LOD ladder.
+- [x] `src/models/vat-bake.worker.ts` — the runtime bake, in a worker, driving the
+      `LOADING MODELS` splash (~1 s for the grunt). `src/models/vat.ts` — textures +
+      GLSL injection via `onBeforeCompile`; **not** a port, Breach's runtime is
+      WebGPU/TSL and this one is WebGL.
+- [x] Clip selection from sim data, exactly as scoped: **distance to the player →
+      `attack`** (variant chosen by the enemy's seed), then speed → idle/walk/run
+      thresholds (a brute walks, a grunt runs, no per-tier config), death-marker age →
+      `die`. One instanced float per enemy. No animation state machine.
+- [x] `animated: true` in the registry is the whole opt-in. Fallback ladder: VAT →
+      static GLB → primitive, each rung with its own console line.
+- [x] `npm run verify` extended to 89 checks, including that instances spread across
+      many VAT frames *and advance through them*, and that a crowd in contact plays
+      attacks while the crowd behind it does not — read off the live `aVatRow`
+      attribute through a new dev-only `__r3f` seam.
+- [ ] **Rigged exports for the other tiers — blocked on assets**, deliberately: the
+      remaining cast is the tutorial's exercise for the viewer. Each is
+      `url` + `animated: true` in the registry once the model exists.
 
 **Done when:** 400 animated enemies run at 60 fps and the bake is invisible to the
-player.
+player. **Both verified** — 60 fps at cap over three consecutive 86/86 runs, and the
+bake reports progress into the splash rather than freezing it.
+
+### What M6b learned
+
+- **Tripo's locomotion presets ship root motion, and it presents as a broken shader.**
+  The grunt's `run` walks its Hip bone 2.31 units — 2.7× the model's height — while the
+  vertices Blender parked on a `neutral_bone` stay put, so the mesh tore into radiating
+  spikes. Diagnosed by bisection: constant VAT rows rendered perfectly (so not the
+  shader, not the texture, not the transform), run-clip rows alone broke (so the baked
+  data), and reading the Hip translation track out of the GLB found the 2.31. Fix: the
+  baker pins any bone whose translation strays >15% of model height from bind; rotations
+  pass through. Locked in as a unit test with a translating-and-rotating clip.
+- **The `defeat` preset is 5.6 s of which only 0.5 s is the fall** (t≈2.9–3.4, measured
+  from the Hip rotation track: 20°→87° across that window, flat after). A prefix trim
+  baked only the stagger and no body ever hit the ground. Clip specs take a
+  `from`/`trim` **window** now, and the die clip is baked from 2.7 s for 1.0 s.
+- **`DEATH_TIME` was tuned for a scale-punch, not a fall.** 0.26 s reads fine on a cube
+  punching out; a body falling over in a quarter of a second reads as a glitch. Now
+  0.85 s, which also slowed the primitive punch — an improvement there too.
+- **`window.__game` exists before the game is playable.** The module evaluates at import
+  time, so the harness's readiness checks passed while the `LOADING MODELS` splash still
+  covered the screen — and the thumbstick check dragged against the overlay. Every
+  readiness wait now also requires the splash to be gone. Fifth entry in the
+  harness-disturbs-the-measurement series.
+- **"Clip selection from speed" was not enough, and the gap was invisible in the code.**
+  The first pass wired idle/walk/run/die and looked right — but an enemy jammed against
+  the player is held nearly stationary by separation, so the crowd actually killing you
+  stood there playing `idle`. Attacks have to be selected on **distance**, tested before
+  speed. Worth recording because the milestone's own wording ("speed → run/idle, death
+  timer → die/dead") describes exactly the version that was wrong, and the three attack
+  presets were sitting unused in the GLB the whole time.
+- **The M6a normalisation matrix earned its keep.** Baked frames are transformed by
+  exactly the matrix the static path bakes into its geometry, so the model cannot change
+  size on its first animated frame — that invariant cost one returned value in M6a and
+  removed a whole class of bug here.
 
 ---
 

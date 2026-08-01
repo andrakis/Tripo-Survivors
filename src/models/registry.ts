@@ -32,6 +32,17 @@ export interface ActorModel {
    */
   yaw?: number;
   /**
+   * Stage 3 (M6b): bake this actor's clips into a Vertex Animation Texture and animate the crowd.
+   *
+   * Requires a RIGGED `url` with named clips — Tripo's bipedal autorig is the intended source. If the
+   * GLB has no skeleton, or none of the clips below match, the actor falls back to the static mesh
+   * (and that falls back to the primitive), so turning this on can only ever cost you animation.
+   *
+   * The clip names are matched case-insensitively as SUBSTRINGS, which is what lets one line cover
+   * `Armature|preset:biped:run` without the viewer having to type it. See MODEL-PIPELINE §6.
+   */
+  animated?: boolean;
+  /**
    * Instance tint: the primitive's colour, and the base its hit flash lerps from.
    *
    * A TEXTURED import ignores it — per-instance colour multiplies into the material, so tinting a
@@ -56,6 +67,9 @@ export const ACTORS: Record<ActorId, ActorModel> = {
     // THE ONE LINE. Delete it (or rename the file) and the grunt is a green box again, with a
     // warning in the console — nothing else in the codebase changes either way.
     url: '/models/grunt.glb',
+    // THE SECOND LINE. Tripo's autorig ships `idle`, `walk`, `run` and `defeat` clips inside the same
+    // GLB; this bakes them into a VAT at load and the crowd animates (MODEL-PIPELINE §6).
+    animated: true,
     height: 1.4,
     scale: 1.0,
     yOffset: 0.7,

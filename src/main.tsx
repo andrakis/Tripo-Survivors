@@ -14,7 +14,13 @@ import { loadActors } from './models/loader';
 // `loadActors` never rejects (src/models/loader.ts): every failure ends as a primitive plus a
 // console warning. The catch below is belt-and-braces for the one outcome MODEL-PIPELINE §1 rules
 // out — a blank page because somebody's asset was wrong.
-loadActors()
+// The progress callback is what makes ROADMAP M6b's "the bake is invisible to the player" true: a
+// VAT bake is a few hundred thousand vertex-skinning operations and it takes about a second, so the
+// splash reports what it is doing rather than sitting there looking hung.
+const label = document.querySelector('#boot span');
+loadActors((frac, what) => {
+  if (label) label.textContent = `${what.toUpperCase()} ${Math.round(frac * 100)}%`;
+})
   .catch((err) => console.warn('[models] resolve failed entirely — running on primitives.', err))
   .finally(() => {
     document.getElementById('boot')?.remove();

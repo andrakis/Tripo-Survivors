@@ -175,9 +175,13 @@ async function hold(keys, ms) {
 }
 
 await page.goto(url, { waitUntil: 'domcontentloaded' });
-await page.waitForFunction(() => !!document.querySelector('canvas') && !!window.__game, {
-  timeout: 20000,
-});
+// Canvas present AND the boot splash gone. __game alone is not enough from M6b: the game module
+// evaluates at import time, before the model load + VAT bake finish — so __game exists while the
+// LOADING MODELS overlay still covers the screen and would swallow every click this script makes.
+await page.waitForFunction(
+  () => !!document.querySelector('canvas') && !!window.__game && !document.getElementById('boot'),
+  { timeout: 30000 },
+);
 await page.waitForTimeout(1500); // let the camera finish its approach and the frame rate settle
 await page.click('canvas', { position: { x: 900, y: 400 } }); // focus, on the right half (no stick)
 
@@ -273,7 +277,7 @@ check('player is still on screen after crossing the arena', Math.abs(cam.x) < 13
 const touchPage = await browser.newPage({ viewport: { width: 420, height: 860 } });
 touchPage.on('pageerror', (e) => errors.push(`touch pageerror: ${e.message}`));
 await touchPage.goto(`${url}?touch=1`, { waitUntil: 'domcontentloaded' });
-await touchPage.waitForFunction(() => !!window.__game, { timeout: 20000 });
+await touchPage.waitForFunction(() => !!window.__game && !document.getElementById('boot'), { timeout: 30000 });
 await touchPage.waitForTimeout(800);
 await touchPage.evaluate(() => {
   const p = window.__game.player;
@@ -1435,6 +1439,130 @@ check(
   models.grunt && models.grunt.fallback === false && models.grunt.textured === true,
   `grunt: ${models.grunt?.fallback === false ? 'loaded' : 'FELL BACK'}${models.grunt?.textured ? ', textured' : ''}`,
 );
+
+// --- M6b: the VAT bake -----------------------------------------------------------------------------
+check(
+  'the rigged GLB baked a VAT with every clip the game asks for',
+  models.grunt?.animated === true &&
+    ['idle', 'walk', 'run', 'attack', 'die'].every((c) => models.grunt.clips.includes(c)) &&
+    models.grunt.frames > 100 &&
+    models.grunt.vatMB < 32,
+  `[${models.grunt?.clips?.join(', ')}] — ${models.grunt?.frames} frames, ${models.grunt?.vatMB} MB`,
+);
+
+// Attacks are chosen by DISTANCE, not speed — an enemy pressed against the player is nearly
+// stationary, and on the speed thresholds alone it would play `idle` while killing you.
+{
+  await teleport(-100, 80);
+  await disarm();
+  await page.evaluate(() => {
+    const g = window.__game;
+    g.combat.orbiters = 0;
+    const s = g.swarm;
+    s.n = 0;
+    const put = (x, z) => {
+      const b = s.n * 8;
+      s.data[b] = g.player.x + x;
+      s.data[b + 1] = g.player.z + z;
+      s.data[b + 2] = 0;
+      s.data[b + 3] = 0;
+      s.data[b + 4] = 10;
+      s.data[b + 5] = 0;
+      s.data[b + 6] = 0;
+      s.data[b + 7] = Math.random();
+      s.n++;
+    };
+    // Ten jammed onto the player, eight standing well clear of it. Generous counts because the
+    // margin band below discards whatever separation has nudged into the boundary ring.
+    for (let i = 0; i < 10; i++) {
+      const a = (i / 10) * Math.PI * 2;
+      put(Math.cos(a) * 1.0, Math.sin(a) * 1.0);
+    }
+    for (let i = 0; i < 8; i++) put(-8 + i * 2.3, 9);
+  });
+  await page.waitForTimeout(600);
+
+  const byDistance = await page.evaluate(() => {
+    const g = window.__game;
+    const vat = window.__actor('grunt').vat;
+    const clipOf = (row) => {
+      for (const c of vat.clips) if (row >= c.start && row < c.start + c.count) return c.name;
+      return '?';
+    };
+    let attr = null;
+    window.__r3f.scene.traverse((o) => {
+      if (!attr && o.isInstancedMesh && o.geometry.getAttribute('aVatRow') && o.count > 5) {
+        attr = o.geometry.getAttribute('aVatRow').array;
+      }
+    });
+    // Bucketed with a MARGIN either side of the attack radius. Separation keeps nudging the crowd,
+    // and the row was written on the last rendered frame while the distance is read now — so an
+    // enemy sitting exactly on the boundary can legitimately disagree with itself. The band is
+    // ignored rather than guessed at; what is being tested is the rule, not the arithmetic of a
+    // frame of drift.
+    const R = 2.2; // TUNING.VAT_ATTACK_R
+    const near = [];
+    const far = [];
+    for (let i = 0; i < g.swarm.n; i++) {
+      const d = Math.hypot(g.swarm.data[i * 8] - g.player.x, g.swarm.data[i * 8 + 1] - g.player.z);
+      if (d < R * 0.8) near.push(clipOf(attr[i]));
+      else if (d > R * 1.3) far.push(clipOf(attr[i]));
+    }
+    return { near, far };
+  });
+  check(
+    'enemies in contact play an attack, not idle',
+    byDistance.near.length >= 4 && byDistance.near.every((c) => c.startsWith('attack')),
+    `close: [${byDistance.near.join(', ')}]`,
+  );
+  check(
+    'and enemies still closing in do not',
+    byDistance.far.length >= 4 && byDistance.far.every((c) => !c.startsWith('attack')),
+    `far: [${byDistance.far.join(', ')}]`,
+  );
+  check(
+    'the attack variants are spread across the crowd rather than all the same',
+    new Set(byDistance.near).size > 1 || models.grunt.clips.filter((c) => c.startsWith('attack')).length === 1,
+    `${new Set(byDistance.near).size} distinct of ${models.grunt.clips.filter((c) => c.startsWith('attack')).length} baked`,
+  );
+  await rearm();
+}
+
+// The crowd is actually animating: the per-instance row attribute must spread across many distinct
+// frames (idle alone is 296 rows; a stuck bake would leave every instance on one), and the same
+// instances must be on different rows a moment later.
+{
+  await teleport(-100, 80);
+  await disarm();
+  await page.evaluate(() => {
+    window.__game.swarm.n = 0;
+    window.__spawn(60, 0, 18);
+  });
+  await page.waitForTimeout(700);
+  const readRows = () =>
+    page.evaluate(() => {
+      const scene = window.__r3f?.scene;
+      let rows = null;
+      // The grunt mesh is the InstancedMesh whose geometry carries the aVatRow attribute.
+      scene?.traverse((o) => {
+        if (!rows && o.isInstancedMesh && o.geometry.getAttribute('aVatRow') && o.count > 10) {
+          rows = Array.from(o.geometry.getAttribute('aVatRow').array.slice(0, o.count));
+        }
+      });
+      return rows;
+    });
+  const a = await readRows();
+  await page.waitForTimeout(400);
+  const b = await readRows();
+  const distinct = a ? new Set(a.map(Math.floor)).size : 0;
+  const moved = a && b ? a.filter((v, i) => Math.floor(v) !== Math.floor(b[i])).length : 0;
+  check(
+    'the crowd animates: instances sit on many VAT frames and advance through them',
+    a !== null && distinct > 10 && moved > a.length / 2,
+    `${distinct} distinct frames across ${a?.length ?? 0} instances, ${moved} advanced in 0.4 s`,
+  );
+  await rearm();
+}
 check(
   'every actor without a url is on its primitive, with no warning',
   ['player', 'runner', 'brute', 'elite', 'orb', 'prop'].every((id) => models[id]?.fallback === true),
@@ -1453,9 +1581,10 @@ check(
   brokenPage.on('pageerror', (e) => brokenLog.push(`pageerror: ${e.message}`));
   await brokenPage.route('**/models/*.glb', (route) => route.abort());
   await brokenPage.goto(url, { waitUntil: 'domcontentloaded' });
-  await brokenPage.waitForFunction(() => !!document.querySelector('canvas') && !!window.__game, {
-    timeout: 30000,
-  });
+  await brokenPage.waitForFunction(
+    () => !!document.querySelector('canvas') && !!window.__game && !document.getElementById('boot'),
+    { timeout: 30000 },
+  );
   await brokenPage.waitForTimeout(1200);
 
   const degraded = await brokenPage.evaluate(() => ({
