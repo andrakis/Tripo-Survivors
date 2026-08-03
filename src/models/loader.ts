@@ -17,28 +17,117 @@ import { ACTORS, type ActorId, type ActorModel } from './registry';
 import { assembleVat, attachVatVertexIds, makeVatMaterial, type Vat } from './vat';
 import type { ClipSpec, VatClip } from './vatCore';
 
+// THE ANIMATION LOOKUP. Five slots, one whole preset library.
+//
+// The game plays exactly five things — `idle`, `walk`, `run`, `attack` (×3) and `die` — and picks
+// between them from numbers the sim already keeps (scene/Swarm.tsx, MODEL-PIPELINE §6). Tripo's
+// humanoid autorig, meanwhile, offers ~100 presets, and a viewer rigs their model with whatever
+// subset they liked the look of. So each slot below carries the ENTIRE library as a priority-ordered
+// fallback chain: the first name that exists in the GLB wins, and a model rigged with `flee_01` and
+// no `run` still runs, one rigged with `slash` and no `box_01` still swings.
+//
+// Only the winner of each chain is baked, so a rig carrying all hundred presets costs six clips of
+// VRAM, not a hundred — the chains are a lookup, not a bake list.
+//
+// Matching is case-insensitive SUBSTRING (that is what lets `run` cover Tripo's
+// `Armature|preset:biped:run` untyped), so a family prefix covers its variants for free: `angry`
+// takes `angry_01..03`, `run` takes `run_upstairs`, `flee` takes both flees. Prefixes are used
+// wherever the variants are the same motion twice. The attacks are the exception and are listed one
+// by one — see ATTACKS.
+
+/**
+ * Standing still: what an enemy does when it is too far from the player to be doing anything else.
+ *
+ * Ordered by how much of an idle survives the substitution — a true idle, then an idle with some
+ * business in it, then in-place emotes (the hostile ones first, because a grunt that stands there
+ * seething reads as an enemy and one that stands there singing reads as a bug), then the presets
+ * where the body is busy with a prop the game knows nothing about, which are the last resort.
+ */
+const IDLE = [
+  'idle', 'standing_relax', 'wait',
+  'look_around', 'fold_arms', 'stretch', 'warm_up',
+  'angry', 'frustrated', 'complain', 'freaky',
+  'afraid', 'frightened', 'scared', 'depressed', 'cry', 'sob',
+  'agree', 'bow', 'greet', 'wave_goodbye', 'clap', 'cheer', 'laugh', 'sing', 'dance',
+  'hug', 'heart_pose',
+  'sit', 'jump_rope', 'press-up', 'make_a_call', 'play_mobile_game', 'play_video_game',
+] as const;
+
+/** Moving, slowly. Anything whose gait reads as covering ground without hurrying. */
+const WALK = [
+  'walk', 'swagger', 'dribble', 'climb', 'swim', 'surf', 'turn',
+] as const;
+
+/**
+ * Moving, fast. `run` already covers `run_upstairs`; `flee` covers both flees, and a fleeing enemy
+ * is a running enemy with the head turned.
+ *
+ * `jump` is last because substring matching cannot tell it from `jump_rope` or `jump_down` — it is
+ * only ever reached by a rig that has no run, no flee and no dive, and the spent-name rule in
+ * `matchClips` keeps it off a `jump_down` that `die` would rather have.
+ */
+const RUN = [
+  'run', 'flee', 'dive', 'flip', 'jump',
+] as const;
+
+/**
+ * Swinging at the player. All three attack slots share this one chain, and `matchClips` spends a
+ * name when it fills a slot, so they come away with three DIFFERENT clips: a full Tripo rig gets
+ * `box_01`/`box_02`/`box_03` exactly as before, and a rig with `slash`, `chop` and `front_kick_01`
+ * gets all three of those instead of three copies of the first.
+ *
+ * Which is why the numbered families are spelled out here rather than collapsed to a prefix: two
+ * kicks are two combos worth having, where `angry_01` and `angry_02` are one idle twice.
+ *
+ * Ordered as: Tripo's actual punches, hand-named rigs, other melee, thrown/cast, tools swung like
+ * weapons, sports throws, and finally the `hit_to_*` reactions — those are the body being hit
+ * rather than hitting, but they are in-place combat contact, they only ever play inside the attack
+ * aura, and a flinch at arm's length beats a T-pose.
+ */
+const ATTACKS = [
+  'box_01', 'box_02', 'box_03', 'attack',
+  'slash', 'chop', 'front_kick_01', 'front_kick_02',
+  'cast_a_spell', 'fire', 'shoot',
+  'dig', 'shovel', 'lift_heavy',
+  'pitch_baseball', 'basketball_shot', 'volleyball',
+  'football_pass', 'football_catch', 'football_save',
+  'hit_to_head', 'hit_to_body_01', 'hit_to_body_02', 'hit_to_stomach', 'hit_to_side',
+] as const;
+
+/**
+ * Going down, once. `defeat` covers `defeat_02`; `die`/`death` cover hand-named rigs; `fall` and
+ * `jump_down` are the presets that end with the body on the floor.
+ *
+ * A rig carrying both defeats gets whichever its exporter listed first — no substring tells them
+ * apart, and they are the same beat.
+ *
+ * The window below is measured against `defeat` and only ever shortens, so a short `fall` that the
+ * window would overrun is baked whole instead (see `planFrames` in vatCore.ts).
+ */
+const DIE = [
+  'defeat', 'die', 'death', 'fall', 'jump_down',
+] as const;
+
 /**
  * The clips the game asks every animated actor for, and what it does with them.
  *
- * Substring matches, so one table covers Tripo's `Armature|preset:biped:run` and a hand-authored
- * `Run` alike. A missing clip is reported and skipped — the runtime falls back to another slot rather
- * than refusing to animate, so a model with only a run cycle still runs.
+ * A missing slot is reported and skipped — the runtime falls back to another slot rather than
+ * refusing to animate, so a model with only a run cycle still runs.
  */
-const CLIP_SPECS: ClipSpec[] = [
-  { as: 'idle', match: 'idle', loop: true },
-  { as: 'walk', match: 'walk', loop: true },
-  { as: 'run', match: 'run', loop: true },
-  // Attacks. `box_*` is what Tripo's autorig presets are called; `attack` covers hand-named rigs.
-  // Baked as LOOPS even though the heuristic calls an attack a one-shot, because the runtime plays
-  // them while an enemy stays in range — a crowd keeps punching, and a wrap-around hitch on a
-  // 2-second combo is invisible where a clamped final pose (frozen mid-punch) would not be.
-  // The variants are optional: a rig with one attack gets one, and nothing is reported missing.
-  { as: 'attack', match: ['box_01', 'attack'], loop: true },
-  { as: 'attack2', match: ['box_02'], loop: true, optional: true },
-  { as: 'attack3', match: ['box_03'], loop: true, optional: true },
-  // `defeat` is Tripo's name for it. The window skips the preset's 3 s of staggering and bakes the
-  // fall itself — see VAT_DIE_FROM in config.ts for the measurement behind the number.
-  { as: 'die', match: ['defeat', 'die', 'death'], loop: false, from: TUNING.VAT_DIE_FROM, trim: TUNING.VAT_DIE_TRIM },
+export const CLIP_SPECS: ClipSpec[] = [
+  { as: 'idle', match: IDLE, loop: true },
+  { as: 'walk', match: WALK, loop: true },
+  { as: 'run', match: RUN, loop: true },
+  // Attacks. Baked as LOOPS even though the heuristic calls an attack a one-shot, because the
+  // runtime plays them while an enemy stays in range — a crowd keeps punching, and a wrap-around
+  // hitch on a 2-second combo is invisible where a clamped final pose (frozen mid-punch) would not
+  // be. The variants are optional: a rig with one attack gets one, and nothing is reported missing.
+  { as: 'attack', match: ATTACKS, loop: true },
+  { as: 'attack2', match: ATTACKS, loop: true, optional: true },
+  { as: 'attack3', match: ATTACKS, loop: true, optional: true },
+  // The window skips `defeat`'s 3 s of staggering and bakes the fall itself — see VAT_DIE_FROM in
+  // config.ts for the measurement behind the number.
+  { as: 'die', match: DIE, loop: false, from: TUNING.VAT_DIE_FROM, trim: TUNING.VAT_DIE_TRIM },
 ];
 
 /**

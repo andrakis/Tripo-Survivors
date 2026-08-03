@@ -319,6 +319,29 @@ describe('clip matching', () => {
     expect(handmade.missing).toEqual([]);
   });
 
+  it('spends a name, so specs sharing one chain take different clips', () => {
+    // How the three attack slots each get their own combo out of a single fallback chain (see
+    // CLIP_SPECS in loader.ts). The duplicated export is the trap: `box_01` exists twice, so
+    // spending the clip object alone would hand slot two the other copy of slot one's punch.
+    const chain = ['box_01', 'box_02', 'slash'];
+    const { entries } = matchClips(
+      [
+        named('Armature|Armature|preset:biped:box_01'),
+        named('Armature|preset:biped:box_01'),
+        named('Armature|preset:biped:slash'),
+      ],
+      [
+        { as: 'attack', match: chain, loop: true },
+        { as: 'attack2', match: chain, loop: true, optional: true },
+        { as: 'attack3', match: chain, loop: true, optional: true },
+      ],
+    );
+
+    expect(entries.map((e) => e.as)).toEqual(['attack', 'attack2']);
+    expect(entries[0].clip.name).toContain('box_01');
+    expect(entries[1].clip.name).toContain('slash'); // not the second copy of box_01
+  });
+
   it('skips a missing OPTIONAL clip silently — a bonus when present, not a gap when absent', () => {
     // The second and third attack variants: a rig with one attack should not be nagged about the
     // other two, but a rig missing `die` outright should still be told.

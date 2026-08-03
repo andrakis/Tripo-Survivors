@@ -68,7 +68,9 @@ export const ACTORS: Record<ActorId, ActorModel> = {
     // warning in the console — nothing else in the codebase changes either way.
     url: '/models/grunt.glb',
     // THE SECOND LINE. Tripo's autorig ships `idle`, `walk`, `run` and `defeat` clips inside the same
-    // GLB; this bakes them into a VAT at load and the crowd animates (MODEL-PIPELINE §6).
+    // GLB; this bakes them into a VAT at load and the crowd animates (MODEL-PIPELINE §6). Those four
+    // are only the first choice — every preset Tripo offers is sorted into one of the game's five
+    // slots, so a rig built from any other subset animates too (CLIP_SPECS in models/loader.ts).
     animated: true,
     height: 1.4,
     scale: 1.0,

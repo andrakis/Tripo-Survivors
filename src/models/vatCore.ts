@@ -245,9 +245,16 @@ export function bakeSkinnedMesh(
 /**
  * Match a GLB's clips against the requested specs.
  *
- * Case-insensitive substring, first match wins, and **duplicates are dropped** — Tripo's autorig
- * export ships every clip twice (`Armature|preset:biped:run` and `Armature|Armature|preset:biped:run`
- * in the real grunt), and baking both would double the cost of the milestone for nothing.
+ * Case-insensitive substring, first match wins, and **a name only ever fills one slot**. Once a
+ * spec matches on the alternate `box_01`, every clip whose name contains `box_01` is spent: no
+ * later spec can take it, and neither can a duplicate of it.
+ *
+ * That single rule buys two things. It drops the **duplicate export** — Tripo's autorig ships every
+ * clip twice (`Armature|preset:biped:run` and `Armature|Armature|preset:biped:run` in the real
+ * grunt), and baking both would double the cost of the milestone for nothing. And it lets several
+ * specs share one fallback chain and come away with *different* clips, which is how the three
+ * attack slots each end up with their own combo instead of three copies of the first one
+ * (`CLIP_SPECS` in loader.ts).
  *
  * Returns the matched entries plus the names of any specs that found nothing, so the caller can say
  * which clip is missing rather than silently animating a corpse with a run cycle.
@@ -261,17 +268,29 @@ export function matchClips(
 } {
   const entries: { clip: THREE.AnimationClip; as: string; loop: boolean; from?: number; trim?: number }[] = [];
   const missing: string[] = [];
+  // The alternates that have already won a slot, lower-cased. Spent by NAME rather than by clip
+  // identity, because the two copies of Tripo's duplicated export are distinct objects.
+  const spent: string[] = [];
   for (const spec of specs) {
     const alternates = Array.isArray(spec.match) ? spec.match : [spec.match];
     let found: THREE.AnimationClip | undefined;
+    let via = '';
     for (const m of alternates) {
-      found = available.find((c) => c.name.toLowerCase().includes(m.toLowerCase()));
-      if (found) break;
+      const needle = m.toLowerCase();
+      found = available.find((c) => {
+        const name = c.name.toLowerCase();
+        return name.includes(needle) && !spent.some((s) => name.includes(s));
+      });
+      if (found) {
+        via = needle;
+        break;
+      }
     }
     if (!found) {
       if (!spec.optional) missing.push(spec.as);
       continue;
     }
+    spent.push(via);
     entries.push({ clip: found, as: spec.as, loop: spec.loop, from: spec.from, trim: spec.trim });
   }
   return { entries, missing };

@@ -245,10 +245,41 @@ and a wall of enemies isn't throwing the same punch in unison.
 **Clips the bake asks for:** `idle`, `walk`, `run` (loops), `attack` ×3 (loops — they
 play for as long as an enemy stays in range, and a wrap-around on a 2-second combo is
 invisible where a clamped final pose frozen mid-punch would not be), and `defeat`/`die`
-(one-shot). Each spec can list **alternate names**, tried in order, so one table covers
-Tripo's `box_01` and a hand-authored `Attack`. The second and third attack variants are
-marked optional: a rig with one attack gets one, with nothing reported missing.
-Duplicates (Tripo exports every clip twice) are taken once.
+(one-shot). The second and third attack variants are marked optional: a rig with one
+attack gets one, with nothing reported missing.
+
+**Five slots, one whole preset library.** Tripo's humanoid autorig offers ~100 presets
+and a viewer rigs their model with whatever subset they liked the look of — which is
+very often not the seven names above. So each slot carries the *entire* library as a
+priority-ordered **fallback chain** (`CLIP_SPECS` in `src/models/loader.ts`): the first
+name present in the GLB wins, so a model rigged with `flee_01` and no `run` still runs,
+one with `slash` and no `box_01` still swings, one with `fall` and no `defeat` still
+dies. Matching is case-insensitive substring, so a family prefix covers its variants for
+free — `angry` takes `angry_01..03`, `run` takes `run_upstairs`.
+
+Only the winner of each chain is baked, so a rig carrying all hundred presets costs six
+clips of VRAM, not a hundred. The chains are a lookup, not a bake list.
+
+**A name only ever fills one slot.** Once a spec matches on `box_01`, every clip whose
+name contains `box_01` is spent — no later spec can take it, and neither can a duplicate
+of it. That one rule drops Tripo's doubled export (every clip ships twice) *and* lets the
+three attack slots share a single chain and still come away with three different combos:
+`box_01`/`box_02`/`box_03` from a full rig, or `slash`/`chop`/`front_kick_01` from one
+that never exported a box. The categories are:
+
+| Slot | Gets | Falls back through |
+|---|---|---|
+| `idle` | standing still | `standing_relax`, `wait`, `look_around`, `fold_arms`, the in-place emotes (hostile ones first — a grunt that stands there seething reads as an enemy, one that stands there singing reads as a bug), then the prop-holding presets last |
+| `walk` | covering ground unhurried | `swagger`, `dribble`, `climb`, `swim`, `surf`, `turn` |
+| `run` | covering ground fast | `flee`, `dive`, `flip`, `jump` |
+| `attack` ×3 | swinging at the player | `slash`, `chop`, the kicks, `cast_a_spell`/`fire`/`shoot`, tools swung like weapons (`dig`, `shovel`, `lift_heavy`), the sports throws, and last the `hit_to_*` reactions — those are the body being *hit* rather than hitting, but they only ever play inside the 2.2 u aura, and a flinch at arm's length beats a T-pose |
+| `die` | going down, once | `die`/`death` for hand-named rigs, then `fall`, `jump_down` |
+
+The one overlap is the jump family: substring matching cannot tell `jump` from
+`jump_rope_01` (an idle) or `jump_down` (a death). `jump` sits last in the run chain and
+the spent-name rule sorts out the rest, so a rig carrying only a skipping rope idles with
+it rather than sprinting on the spot with it. `src/models/clipSpecs.test.ts` holds Tripo's
+preset list verbatim and asserts every one of them has a home.
 
 ### 6.1 Two things Tripo's autorig output *will* do, and what happens
 

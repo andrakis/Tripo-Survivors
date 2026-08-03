@@ -101,18 +101,25 @@ animates:
 grunt: { ..., url: '/models/grunt.glb', animated: true },
 ```
 
-The game looks for clips named (loosely — Tripo's `Armature|preset:biped:run` just
-works):
+The game plays five things (names matched loosely — Tripo's `Armature|preset:biped:run`
+just works):
 
-| Wanted | Tripo calls it | Used when |
+| Wanted | Tripo's first choice | Used when |
 |---|---|---|
 | `idle` / `walk` / `run` | same | by how fast the enemy is moving |
 | attack ×3 | `box_01`, `box_02`, `box_03` | within 2.2 units of the player |
-| `die` | `defeat_03` | the enemy has just been killed |
+| `die` | `defeat` (any variant) | the enemy has just been killed |
 
-Nothing to configure: which clip plays comes out of the simulation. Only the first
-attack is needed — the other two are used if they exist, and each enemy keeps its own
-so a crowd isn't punching in unison.
+**You don't have to rig those seven.** Every one of Tripo's ~100 humanoid presets is
+sorted into one of the five slots, and each slot takes the best one your model actually
+has. Rig it with `flee_01` and it runs; with `standing_relax` and it idles; with
+`slash`, `chop` and `front_kick_01` and it throws three different punches; with `fall`
+and it dies. Only the clips that win a slot are baked, so rigging with everything costs
+no more VRAM than rigging with seven.
+
+Nothing to configure: which clip plays comes out of the simulation. Only one attack is
+needed — the other two are used if they exist, and each enemy keeps its own so a crowd
+isn't punching in unison.
 
 Two Tripo quirks are handled for you: baked-in root motion is pinned (your model runs
 on the spot, the game moves it), and the long `defeat` preset is cut down to the part

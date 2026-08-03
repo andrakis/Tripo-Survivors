@@ -25,9 +25,15 @@ function check(name, pass, detail) {
   console.log(`${pass ? '  ok  ' : ' FAIL '} ${name}${detail ? `  — ${detail}` : ''}`);
 }
 
+// Under Crostini/Baguette the container user has no valid X11 MIT-MAGIC-COOKIE, so a headed
+// launch dies with "Missing X server or $DISPLAY". It does own $XDG_RUNTIME_DIR/wayland-0, and
+// Mesa's Wayland EGL platform resolves to the real virgl device — i.e. HARDWARE WebGL, which is
+// what the fps checks below need. Keyed off WAYLAND_DISPLAY so Windows and X11-only Linux
+// (where forcing Ozone/Wayland would break the launch) are unaffected.
+const wayland = process.env.WAYLAND_DISPLAY ? ['--ozone-platform=wayland'] : [];
 const browser = await chromium.launch({
   headless,
-  args: headless ? ['--use-gl=swiftshader', '--enable-unsafe-swiftshader'] : [],
+  args: headless ? ['--use-gl=swiftshader', '--enable-unsafe-swiftshader'] : wayland,
 });
 const page = await browser.newPage({ viewport: { width: 1280, height: 800 } });
 
@@ -182,7 +188,33 @@ await page.waitForFunction(
   () => !!document.querySelector('canvas') && !!window.__game && !document.getElementById('boot'),
   { timeout: 30000 },
 );
-await page.waitForTimeout(1500); // let the camera finish its approach and the frame rate settle
+/**
+ * Wait until the sim clock actually advances at ~real time.
+ *
+ * A flat sleep here is a machine-speed bet, and on a slower box it loses: the model load and shader
+ * compile keep the main thread busy well past the point `#boot` is removed, so rAF does not run and
+ * `__game.time` does not advance. The first movement checks then measure a STOPPED world and fail
+ * with dz/dx 0.00 — nothing to do with input, which is why every later keyboard check passed.
+ *
+ * Measured on a Crostini/virgl box: the sim reached real time ~2.6 s after the splash cleared,
+ * against the 1500 ms this used to wait. Waiting on the condition instead of a number costs a fast
+ * machine one 400 ms sample and makes a slow one correct.
+ */
+async function waitForRealtimeSim(pg, timeoutMs = 25000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const t0 = await pg.evaluate(() => window.__game.time);
+    const w0 = Date.now();
+    await pg.waitForTimeout(400);
+    const t1 = await pg.evaluate(() => window.__game.time);
+    if ((t1 - t0) / ((Date.now() - w0) / 1000) > 0.9) return true;
+  }
+  return false;
+}
+if (!(await waitForRealtimeSim(page))) {
+  console.log('  warn  sim never reached real time — movement checks below may be unreliable');
+}
+await page.waitForTimeout(400); // let the camera finish its approach
 await page.click('canvas', { position: { x: 900, y: 400 } }); // focus, on the right half (no stick)
 
 /**
@@ -278,7 +310,7 @@ const touchPage = await browser.newPage({ viewport: { width: 420, height: 860 } 
 touchPage.on('pageerror', (e) => errors.push(`touch pageerror: ${e.message}`));
 await touchPage.goto(`${url}?touch=1`, { waitUntil: 'domcontentloaded' });
 await touchPage.waitForFunction(() => !!window.__game && !document.getElementById('boot'), { timeout: 30000 });
-await touchPage.waitForTimeout(800);
+await waitForRealtimeSim(touchPage);
 await touchPage.evaluate(() => {
   const p = window.__game.player;
   p.x = 0;
@@ -1090,6 +1122,12 @@ check(
 
 // --- 12c. orbs that do not give up, and orbs that consolidate -------------------------------------
 await teleport(-100, 80);
+// Baseline BEFORE the orb exists. Taken after placement, this races the pickup: the orb starts
+// 1.5 u away, inside the magnet radius, and banks ~44 ms later — while the placement round-trip
+// plus prog() (which pulls document.body.innerText, forcing a layout) costs ~41 ms on a slower
+// machine. The baseline then already contains the +5 and the check reports "0 left, +0 xp".
+// It passes on a fast box only because the reads win the race, which is not something to rely on.
+const orbBefore = await prog();
 await page.evaluate(() => {
   const g = window.__game;
   g.swarm.n = 0;
@@ -1104,7 +1142,7 @@ await page.evaluate(() => {
   g.orbs.n = 1;
 });
 {
-  const before = await prog();
+  const before = orbBefore;
   // Run flat out for a second and a half. The orb latched on the first tick and has to catch up.
   await hold(['KeyA'], 1500);
   const after = await prog();
