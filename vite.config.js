@@ -20,7 +20,10 @@ function staticAsset404() {
   const guard = (root) => (req, res, next) => {
     const url = req.url || '';
     if (!/^\/models\//.test(url)) return next();
-    const filePath = resolve(root, '.' + url.split('?')[0]);
+    // Decoded before the existence check: a filename with a space ("swift one.glb") arrives as
+    // %20, and existsSync on the encoded path misses — the guard would 404 the exact kind of
+    // just-dropped-in file it exists to protect.
+    const filePath = resolve(root, '.' + decodeURIComponent(url.split('?')[0]));
     if (existsSync(filePath)) return next();
     res.statusCode = 404;
     res.end('Not found');

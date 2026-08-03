@@ -435,9 +435,11 @@ with them but at their scale can round any of them without losing more than a st
 | Attack | — automatic — | — automatic — |
 | Facing | derived from movement direction | derived from movement direction |
 
-Movement is **camera-relative**: W is "away from the camera", which with a
-world-fixed camera yaw means W is always the same world direction. Touch and keyboard
-write the same normalised input vector, so there is exactly one movement code path.
+Movement is **camera-relative**: W is "away from the camera". Under the default fixed
+camera the yaw is world-fixed, so W is always the same world direction; under the
+optional orbit camera (M7) it genuinely follows the camera, and the rotation happens in
+`input.ts` against the yaw that was last *rendered*. Touch and keyboard write the same
+normalised input vector, so there is exactly one movement code path either way.
 
 No pause, no menu, no options screen in v1. A run starts on load and restarts from
 the game-over card.
@@ -466,6 +468,15 @@ The camera is a third-person follow at a fixed ~45° downward angle and fixed wo
 yaw, trailing the player with critically-damped smoothing. It shows roughly 40 × 26
 world units — enough that a spawn ring sits comfortably offscreen and the player can
 see a threat with about a second and a half to react.
+
+M7 added an **optional** free orbit camera on top of it
+([ARCHITECTURE §9](ARCHITECTURE.md)). The rules below are written against the fixed
+camera and are still tuned for it: the fixed rig is what the game is balanced around,
+what the spawn director's offscreen ring is computed from, and what a touchscreen gets
+by default. Orbit mode is a viewing tool — for looking at an imported model from a side
+the fixed rig never shows, and for seeing the arena you are fighting in — and a player
+who orbits into an awkward angle has chosen a worse view, which is a fair trade to
+offer as long as it is never the default.
 
 Non-negotiables, in priority order, for anything that appears on screen:
 

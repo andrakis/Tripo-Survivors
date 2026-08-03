@@ -558,27 +558,83 @@ where it came from. Two producers write it:
 No existing virtual-joystick implementation exists in any sibling repo — this is
 written fresh, and it is deliberately about 60 lines.
 
-Movement is camera-relative, but since camera yaw is world-fixed
-([DESIGN.md §12](DESIGN.md)) the transform is a constant rotation, not a per-frame
-basis computation.
+Both producers speak **screen** space; the sim wants **world** space. `setInputBasisYaw`
+is the seam: `sampleInput` rotates the resolved vector by the camera yaw the rig last
+rendered (§9). Under the fixed camera that yaw is `0`, the rotation is skipped entirely,
+and screen space and world space coincide — which is why the game shipped six milestones
+without this function existing. The orbit camera breaks the coincidence: with the camera
+swung round behind the player, holding W under the old mapping walks them *toward the
+screen*, and every player reads that as inverted controls rather than as a camera
+convention.
+
+The rotation lives in `input.ts` rather than in `sim/player.ts` deliberately. It keeps the
+basis change in the module that already owns "what did the human ask for", leaves exactly
+one movement code path for both producers, and means the sim still receives a plain
+world-space unit vector and stays runnable in node with no camera at all (§2.1). A
+rotation preserves magnitude, so it is applied *after* normalisation without undoing it —
+a diagonal is exactly as fast at every camera angle (`src/input.test.ts`).
 
 ## 9. Camera
 
-`scene/CameraRig.tsx`: target = `player.position + CAM_OFFSET`, where `CAM_OFFSET`
-is a fixed vector giving ~45° of downward pitch and a fixed world yaw. Position is
-smoothed with a critically-damped follow:
+`scene/CameraRig.tsx` runs **two modes off one rig**. They differ in exactly one value —
+the offset from the follow point to the camera — and share the smoothing, the shake and
+the fog. That is why adding the second mode did not fork the file.
+
+The follow point is the player, smoothed with a critically-damped follow:
 
 ```ts
 const k = 1 - Math.exp(-CAM_STIFFNESS * dt)   // frame-rate independent
-cam.position.lerp(target, k)
+follow.lerp(playerPosition, k)
+cam.position.copy(follow).add(offset)
+cam.lookAt(follow)
 ```
 
 `1 - exp(-k·dt)` rather than a raw `lerp(a, b, 0.1)` — the raw form makes the
 camera's stiffness a function of framerate, which is subtly wrong on a 144 Hz display
 and badly wrong at 20 fps.
 
-The camera never rotates and never collides with obstacles. It is a fixed offset with
-lag, and that is the entire system.
+`lookAt` aims at the **smoothed** follow point, never at the player directly. Against the
+raw target the view direction wobbles by however far the smoothing is currently lagging,
+which reads as a permanent gentle sway rather than as a bug. Against `follow` the
+direction is exactly `-offset` and is stable by construction — which is what lets orbit
+mode, which must re-aim every frame, use the same call. The shake is added *after*
+`lookAt`, so it translates the camera without rotating the view.
+
+**FOLLOW** (default): `offset = CAM_OFFSET`, a fixed vector giving ~45° of downward
+pitch and a fixed world yaw. It never rotates and never collides with obstacles. A fixed
+world yaw is what makes "W" a constant world direction, and what keeps every model inside
+one angle band — so a viewer only has to make their Tripo export look good from
+three-quarters-above.
+
+**ORBIT** (M7, `src/camera.ts`): free yaw, pitch and zoom about the follow point. Drag
+orbits, wheel zooms, `C` toggles, `R` re-centres. It gives up both of the guarantees
+above, on purpose, for two things the fixed rig cannot do — let a viewer walk around the
+model they just imported, and let them zoom out far enough to see the arena and its
+boundary.
+
+Three details carry the mode:
+
+- **The home pose is derived from `CAM_OFFSET`**, not written down beside it, so orbit's
+  starting pose *is* the fixed rig's pose. Pressing `C` moves the camera by nothing; the
+  controls simply come alive. Leaving orbit re-centres the pose, so the next entry is
+  continuous too.
+- **Movement becomes camera-relative.** The rig calls `setInputBasisYaw` (§8) with the
+  yaw of the camera it just *rendered* — not the one requested — so the controls can never
+  disagree with the picture, including mid-transition. In follow mode this is exactly `0`
+  and `input.ts` short-circuits it, leaving follow-mode movement bit-for-bit unchanged.
+- **Fog tracks the camera distance.** `FOG_NEAR` is a constant for the fixed rig only
+  because that rig's distance is a constant. Zoom out past 40 units against a hardcoded
+  near plane and the player fades into the fog, breaking [DESIGN §12](DESIGN.md) rule 1 at
+  exactly the moment you zoomed out to look at them. Tying near to the distance also means
+  zooming out genuinely reveals more world, which is what makes the boundary findable.
+
+Pitch is clamped above the ground plane and below the pole: under the floor you see the
+arena through a one-sided plane, and at the pole yaw stops meaning anything and the view
+spins about a degenerate axis. Both read as the camera having broken.
+
+Orbit mode is **harder to play on a touchscreen**, where the drag that orbits competes
+with the thumb that moves — the thumbstick owns the left half of the screen, so orbiting
+is a right-half gesture. Follow remains the default everywhere for that reason.
 
 ## 10. Testing
 

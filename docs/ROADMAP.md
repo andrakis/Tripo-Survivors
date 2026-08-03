@@ -718,6 +718,67 @@ loaded and which did not — and can try one without editing a file. Both done.
 
 ---
 
+## M7 — the second camera, and a stage worth looking at
+
+**Shipped.** An optional free-orbit camera, and a ground that is no longer a plane with a
+grid on it.
+
+The two arrived together because each one exposed the other. A free camera pointed at the
+M6 stage shows you a flat colour and a line grid receding into fog — the fixed 45° rig was
+hiding how little was there. And a textured ground with a boundary wall is wasted on a
+camera that never looks at either.
+
+- **Orbit camera** (`src/camera.ts`, `scene/CameraRig.tsx`) — drag to orbit, wheel to zoom,
+  `C` to toggle, `R` to re-centre, plus a HUD button because a hotkey nobody was told about
+  is not a feature. Follow mode stays the default.
+- **Camera-relative movement** (`input.ts` `setInputBasisYaw`) — the coupling that makes the
+  orbit camera playable rather than merely present.
+- **Grassland ground** (`scene/terrain.ts`) — a procedurally generated tiling texture at the
+  old grid's 8-unit scale. No checked-in image.
+- **Boundary** (`scene/Boundary.tsx`, `scene/boundaryLayout.ts`) — a rampart on the world
+  bound with hills beyond it, four instanced draws.
+- **Sky** (`scene/Sky.tsx`) — a gradient sphere, so looking at the horizon shows a sky
+  rather than a background fill.
+
+### What this milestone got right, and what it nearly got wrong
+
+- **The home pose is derived, not restated.** Orbit's starting yaw/pitch/distance are
+  computed from `CAM_OFFSET`, so entering orbit mode moves the camera by exactly nothing.
+  Writing those three numbers down beside it would have worked identically on the day and
+  drifted the first time the fixed rig was retuned — the failure being a camera that jumps
+  on a keypress that promised not to move anything. There is a test for it.
+- **A new camera is a new fog problem.** `FOG_NEAR` was only ever allowed to be a constant
+  because the fixed rig's distance is a constant. Zoom out to 60 units against a hardcoded
+  near plane of 40 and the *player* fades into the fog — breaking readability rule 1 at
+  precisely the moment you zoomed out to look at them. Fog near now tracks the camera
+  distance, which turned out to be the same change that makes zooming out reveal the
+  boundary rather than pushing a wall of fog along in front of you.
+- **The circle-in-a-square bug, caught by a test rather than by an eye.** Hills were placed
+  on a ring of radius 1.15 × the world half-extent, which sounds outside a 256 × 256 arena
+  and is not: a circle passes within r/√2 of the origin on the diagonals, so every hill near
+  a corner stood *inside* the playfield, 115 units into a 130-unit bound. Placement now uses
+  the Chebyshev metric the square arena is actually measured in. Nothing about the code
+  looked wrong; the assertion is what found it.
+- **Art that duplicates a sim constant will drift from it.** The wall is drawn where
+  `clampToWorld` already stops the player, and `boundaryLayout.test.ts` asserts the inner
+  face lands on the bound with the player's radius accounted for. A wall a unit inside the
+  clamp stops the player visibly *inside* stone; a unit outside and they stop in mid-field
+  with the wall still a stride away. Both read as movement bugs, not scenery bugs.
+- **The grid was load-bearing, and its replacement had to inherit the job.** With a
+  featureless ground and a camera locked to the player, movement is invisible. The grass
+  texture kept the grid's 8-unit scale precisely because that was the number that read
+  correctly at this camera distance — the texture is the new motion reference, not a
+  decoration laid over the old one.
+- **Verification without a GPU.** This box still has no usable headless WebGL, so none of
+  this was checked by looking at it. What *was* checked, by driving the real game under
+  Playwright and reading the live scene graph: entering orbit leaves the offset at
+  `(0, 26, 26)`; a 220 px drag yields exactly 75.6° of yaw; zoom clamps at 140 with fog
+  following to `[148, 253]`; exiting returns every value to the follow-mode constants; and
+  holding W with the camera at −75.6° moves the player along the away-from-camera heading
+  with an alignment of 1.000. Pixels remain unverified and are the user's to check.
+
+---
+
 ## Not on this roadmap
 
 Deliberately out of scope; listed so they aren't re-proposed. Meta-progression between

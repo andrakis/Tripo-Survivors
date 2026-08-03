@@ -7,6 +7,8 @@ import { useRef } from 'react';
 import * as THREE from 'three';
 import { COLORS, FOG_FAR, FOG_NEAR } from '../config';
 import { Ground } from './Ground';
+import { Boundary } from './Boundary';
+import { Sky } from './Sky';
 import { Obstacles } from './Obstacles';
 import { CameraRig } from './CameraRig';
 import { GameLoop } from './GameLoop';
@@ -44,7 +46,11 @@ export function Scene() {
       <ambientLight intensity={0.55} />
       <directionalLight position={[40, 60, 25]} intensity={1.5} />
 
+      {/* Backdrop first: it writes no depth, so its only ordering requirement is being early. */}
+      <Sky />
       <Ground />
+      {/* The rampart and the hills beyond it. Static, four instanced draws, no sim involvement. */}
+      <Boundary />
       <Obstacles />
 
       {/* GameLoop is the one tick and runs at priority -1, so everything below reads fresh state. */}

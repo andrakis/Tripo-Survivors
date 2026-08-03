@@ -155,7 +155,7 @@ that as an artistic override.
 |---|---|
 | Player | 1.7 |
 | Grunt | 1.4 |
-| Runner | 1.5 (tall and thin) |
+| Runner | 2.1 (tall and thin — raised from 1.5 when the first real import read *smaller* than the squat grunt; see ART-STYLE's four-rung ladder. The ceiling for this rung: ±9% jitter above ~2.15 overlaps the brute) |
 | Brute | 2.6 |
 | Elite | 4.5 |
 | Orb | 0.45 |

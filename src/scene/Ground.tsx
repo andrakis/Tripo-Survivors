@@ -1,66 +1,55 @@
-// The stage: a flat plane, a grid, and a darker band beyond the play bounds.
+// The stage floor: textured grassland inside the play bounds, dark ground beyond them.
 //
-// The grid is not decoration. With a featureless ground and a camera that follows the player
-// exactly, player movement is INVISIBLE — you'd see the world slide and nothing else. The 8-unit
-// grid is the motion reference that makes running feel like running (docs/ART-STYLE.md).
+// Through M6 this was a flat plane plus an 8-unit line grid, and the grid was not decoration — with
+// a featureless ground and a camera that follows the player exactly, movement is INVISIBLE. You see
+// the world slide and nothing else. The grid was the motion reference that made running feel like
+// running.
 //
-// Built explicitly rather than with THREE.GridHelper: the helper bakes per-vertex colours and its
-// own material settings, which fought the fog and the flat palette here. Fifteen lines of
-// LineSegments is less code than working around it, and it spans exactly the play area — so the
-// grid's edge IS the world boundary, doing double duty as the out-of-bounds warning.
+// M7 replaced it with a tiling grass texture at that same 8-unit scale (scene/terrain.ts), which
+// does the same job continuously instead of once every eight units, and does not put a sci-fi grid
+// on a field. The grid's second job — marking where the world ends — moved to something better
+// suited to it, an actual wall you can see (scene/Boundary.tsx).
 
-import { useMemo } from 'react';
-import * as THREE from 'three';
-import { CFG, COLORS, HALF_X, HALF_Z } from '../config';
-
-const GRID_SPACING = 8;
-
-// One short segment PER CELL, not one 256-unit line per row and column.
-//
-// Fog depth is interpolated between a segment's two endpoints, never recomputed along it. A grid
-// line spanning the whole world runs from far behind the camera to well beyond the fog, so both
-// its endpoints are "very far" — and the interpolated fog depth stays very far along the entire
-// segment, including the stretch passing right next to the player. The result is a grid that is
-// fully fogged out exactly where you need to see it, which reads as "the grid isn't rendering"
-// rather than as a fog bug. Short segments keep the interpolation honest.
-//
-// Costs ~4k vertices, uploaded once, never touched again.
-function buildGrid(): THREE.BufferGeometry {
-  const v: number[] = [];
-  for (let x = -HALF_X; x <= HALF_X; x += GRID_SPACING) {
-    for (let z = -HALF_Z; z < HALF_Z; z += GRID_SPACING) v.push(x, 0, z, x, 0, z + GRID_SPACING);
-  }
-  for (let z = -HALF_Z; z <= HALF_Z; z += GRID_SPACING) {
-    for (let x = -HALF_X; x < HALF_X; x += GRID_SPACING) v.push(x, 0, z, x + GRID_SPACING, 0, z);
-  }
-  const g = new THREE.BufferGeometry();
-  g.setAttribute('position', new THREE.Float32BufferAttribute(v, 3));
-  return g;
-}
+import { useEffect, useMemo } from 'react';
+import { useThree } from '@react-three/fiber';
+import { CFG, COLORS } from '../config';
+import { GRASS_TILE, makeGrassTexture } from './terrain';
 
 export function Ground() {
-  const gridGeometry = useMemo(buildGrid, []);
-  const gridMaterial = useMemo(
-    () => new THREE.LineBasicMaterial({ color: COLORS.GRID, fog: true }),
-    [],
-  );
+  // Anisotropy matters more here than anywhere else in the scene: this is a plane seen at a 45°
+  // grazing angle stretching to the fog, and without it the texture turns to shimmering mush at
+  // exactly the distance the player is watching for incoming enemies. Capped at 8 — past that the
+  // cost is real and the difference is not.
+  const maxAnisotropy = useThree((s) => s.gl.capabilities.getMaxAnisotropy());
+
+  const grass = useMemo(() => {
+    const tex = makeGrassTexture();
+    if (!tex) return null;
+    tex.repeat.set(CFG.WORLD_X / GRASS_TILE, CFG.WORLD_Z / GRASS_TILE);
+    tex.anisotropy = Math.min(8, maxAnisotropy);
+    return tex;
+  }, [maxAnisotropy]);
+
+  // A CanvasTexture holds a GPU allocation that outlives the React tree unless somebody says so.
+  useEffect(() => () => grass?.dispose(), [grass]);
 
   return (
     <group>
-      {/* Out-of-bounds: a larger, darker plane underneath. The player is clamped at the world edge
-          rather than falling off, so this band exists to make "you are being cornered" legible a
-          second before it is fatal. */}
+      {/* Out-of-bounds: a larger, darker plane underneath, reaching past the boundary wall so the
+          world does not simply stop at it. The player is clamped at the world edge rather than
+          falling off, so this exists to make "you are being cornered" legible a second before it is
+          fatal — and, since M7, to give the far side of the wall something to stand on. */}
       <mesh rotation-x={-Math.PI / 2} position-y={-0.02}>
         <planeGeometry args={[CFG.WORLD_X * 2.5, CFG.WORLD_Z * 2.5]} />
         <meshLambertMaterial color={COLORS.OUT_OF_BOUNDS} />
       </mesh>
 
+      {/* The play area. `map` falls back to a flat colour where no canvas was available, which keeps
+          a machine that cannot give us a 2D context on the M6 ground rather than on no ground. */}
       <mesh rotation-x={-Math.PI / 2} position-y={0}>
         <planeGeometry args={[CFG.WORLD_X, CFG.WORLD_Z]} />
-        <meshLambertMaterial color={COLORS.GROUND} />
+        <meshLambertMaterial color={grass ? 0xffffff : COLORS.GROUND} map={grass} />
       </mesh>
-
-      <lineSegments geometry={gridGeometry} material={gridMaterial} position-y={0.02} />
     </group>
   );
 }

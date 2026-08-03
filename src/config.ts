@@ -244,6 +244,30 @@ export const TUNING = {
   CAM_FOV: 45,
   CAM_STIFFNESS: 6, // used as 1 - exp(-k*dt), so it is framerate-independent
 
+  // --- orbit camera (M7, src/camera.ts) ---
+  // The optional free camera. Follow mode is still the default and still what the game is balanced
+  // around; these only apply once a viewer presses C.
+  ORBIT_SENS: 0.006, // radians per pixel of drag, both axes. A ~260 px swipe is a quarter turn.
+  ORBIT_PITCH_MIN: 0.12, // ~7° above the ground plane. Never 0: at the horizon the camera is level
+  // with the arena floor, and a one-sided ground plane seen edge-on shows the player nothing.
+  ORBIT_PITCH_MAX: 1.45, // ~83°. Never π/2: at the pole yaw stops meaning anything and the view
+  // spins about a degenerate axis, which reads as the camera having broken.
+  ORBIT_DIST_MIN: 9, // closer than this and the player's own model fills the frame
+  ORBIT_DIST_MAX: 140, // far enough to see a world boundary 128 units away, and no further
+  ORBIT_ZOOM_STEP: 1.13, // per wheel notch, MULTIPLICATIVE — one notch is the same fraction of the
+  // distance at 10 units as at 140, where an additive step is a teleport at one end or invisible
+  // at the other.
+  ORBIT_EASE: 25, // 1 - exp(-k*dt) on the camera OFFSET. High enough that dragging feels direct
+  // (about two frames of lag at 60 Hz), low enough that flipping modes eases over ~0.2 s rather
+  // than cutting. One constant covers both because they differ by three orders of magnitude in how
+  // far the offset has to travel.
+  ORBIT_FOG_PAD: 8, // fog near = camera distance + this, so the player is NEVER fogged at any zoom.
+  // The fixed rig can hardcode FOG_NEAR because its distance never changes; orbit's does, and a
+  // player dimmed into the fog breaks DESIGN §12 rule 1 at exactly the moment you zoom out to look
+  // at them.
+  ORBIT_FOG_SPAN: 105, // and fog far = near + this. Zooming out therefore reveals more world rather
+  // than pushing a fixed wall of fog along with you — which is what makes the boundary findable.
+
   // --- caps (ARCHITECTURE §5) ---
   MAX_ENEMIES: 400, // deliberately low; raise it to find your machine's ceiling
   MAX_BOLTS: 128,
@@ -354,16 +378,37 @@ export function orbGrade(value: number): number {
 }
 
 // docs/ART-STYLE.md. The stage is desaturated and dim; all chroma is spent on the cast.
+//
+// M7 turned the stage from slate-and-grid into dusk grassland. The VALUES barely moved and that is
+// the point: every colour here still sits in the band ART-STYLE reserves for scenery, well under
+// the dimmest enemy, so a ground with detail in it did not cost the cast any legibility. The one
+// number that changed materially is GROUND, from 47 to 55 — still 28 points under the props.
 export const COLORS = {
-  GROUND: 0x2a2f38,
-  GRID: 0x3d4453,
+  // Grass. The base is what the texture is filled with and what the fog matches; DARK and LIGHT are
+  // the two tints scene/terrain.ts stipples over it. LIGHT is the brightest pixel the ground can
+  // produce anywhere, which is why it is held below PROP rather than merely below the cast.
+  GROUND: 0x2f3a2c,
+  GRASS_DARK: 0x232b21,
+  GRASS_LIGHT: 0x3f4d38,
   OUT_OF_BOUNDS: 0x1c2027,
+  // The arena boundary (scene/Boundary.tsx): a rampart wall with a lighter cap, and the silhouette
+  // hills beyond it. The wall sits just under the props — it is the largest object in the world by
+  // screen area when you stand next to it, so it gets the dimmest treatment of any built thing. The
+  // hills are darker than the GROUND on purpose: "outside" should read as receding, not as somewhere
+  // with more going on than the arena.
+  WALL: 0x3f444b,
+  WALL_CAP: 0x4e535d,
+  HILL: 0x232830,
+  // Sky, at the zenith; it fades to FOG at the horizon so the two meet without a seam. Darker than
+  // the ground, which is not how daylight works and is exactly right here — the palette has always
+  // been dusk, and a bright sky would put the brightest pixels on screen behind the player.
+  SKY_TOP: 0x161d2b,
   // Was 0x6b6f7a. M5's readability pass: at relative luminance 111 the props sat inside the cast's
   // value range (the brute was 114, the elite 121) while covering far more of the screen than any
   // actor — so the first thing the eye found in a still frame was a rock. 0x4e535d is 83, cleanly
   // between the ground (47) and the dimmest actor, which is the band ART-STYLE always described.
   PROP: 0x4e535d,
-  FOG: 0x2a2f38, // EXACTLY the ground colour — the horizon has to vanish, not band
+  FOG: 0x2f3a2c, // EXACTLY the ground colour — the horizon has to vanish, not band
 
   PLAYER: 0xffe9a8,
   GRUNT: 0x7fd15a,

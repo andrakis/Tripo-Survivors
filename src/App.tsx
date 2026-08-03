@@ -9,6 +9,7 @@ import { LevelUpChoice } from './ui/LevelUpChoice';
 import { BoostToast } from './ui/BoostToast';
 import { GameOver } from './ui/GameOver';
 import { ModelPicker } from './ui/ModelPicker';
+import { CameraToggle } from './ui/CameraToggle';
 import { TUNING } from './config';
 
 export function App() {
@@ -45,6 +46,7 @@ export function App() {
           human clock and never on the sim's (ARCHITECTURE §3). TouchControls renders itself away on
           a fine pointer (ARCHITECTURE §8). */}
       <Hud />
+      <CameraToggle />
       <LevelUp />
       <BoostToast />
       <TouchControls />

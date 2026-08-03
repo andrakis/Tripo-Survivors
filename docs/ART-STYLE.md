@@ -77,11 +77,16 @@ never competes for attention with the thing the tutorial is trying to show off.
 
 | Role | Colour | Notes |
 |---|---|---|
-| Ground | `#2a2f38` | Cool near-black; the darkest thing on screen |
-| Ground grid | `#3d4453` | Faint 8-unit lines — motion reference, not decoration |
+| Ground (grass base) | `#2f3a2c` | Dusk green, desaturated; the texture's fill colour |
+| Grass, dark stipple | `#232b21` | The shadow tint drawn over the base |
+| Grass, light stipple | `#3f4d38` | The brightest pixel the ground can produce — held under the props |
 | Ground, out-of-bounds band | `#1c2027` | Visibly darker so being cornered reads early |
 | Props | `#4e535d` | Neutral grey, flat-shaded, no tint variation |
-| Fog | `#2a2f38` | **Exactly** the ground colour — the horizon must vanish |
+| Boundary wall | `#3f444b` | Under the props: it is the largest object in the world by area |
+| Wall cap / merlons | `#4e535d` | One value step up, so the top edge reads as lit |
+| Distant hills | `#232830` | Darker than the ground — "outside" must recede |
+| Sky, zenith | `#161d2b` | Fades to the fog colour at the horizon |
+| Fog | `#2f3a2c` | **Exactly** the ground colour — the horizon must vanish |
 | Player | `#ffe9a8` | Warm, bright, highest value on screen |
 | Grunt | `#7fd15a` | Green |
 | Runner | `#5ad1c8` | Cyan, thin silhouette |
@@ -120,19 +125,23 @@ of what the source model looks like.
 ```
    elite  ████████     4.5u tall, 2.8 wide     "route around this"
    brute  ████         2.6u tall, 1.6 wide     "this will reach you"
-   grunt  ██           1.4u tall, 0.8 wide     "the mass"
-   runner ▐            1.5u tall, 0.7 wide     "this is fast"
+   runner ▐▌           2.1u tall, thin         "this is fast"
    player ▐▌           1.7u, bright            "you"
+   grunt  ██           1.4u tall, 0.8 wide     "the mass"
 ```
 
 The player is deliberately mid-height — not the biggest thing on screen — so an elite
 entering the frame is immediately legible as a problem.
 
-The ladder is **three rungs, not four**: the grunt and the runner are seven percent apart
-in height and were never meant to be told apart by size — they are separated by *width*
-and hue, and "small" is one rung containing two tiers. Anything that scales an actor
-(M5's per-enemy jitter, an imported model's normalisation) has to stay inside
-small → brute → elite, and those are the gaps `src/readability.test.ts` guards.
+The ladder is **four rungs** since the first real runner import. It was three — the
+runner at 1.5 was meant to be told from the grunt by width and hue, not size — but the
+imported runner is a slim biped, and at 1.5 it *read* smaller than the squat grunt:
+normalisation locks bounding heights, not perceived mass, and a 1.4-tall model that is
+1.0 wide carries more screen area than a 1.5-tall one a third as deep. So size now
+carries threat outright — grunt → runner → brute → elite — with the runner still the
+thinnest thing on screen. Anything that scales an actor (M5's per-enemy jitter, an
+imported model's normalisation) has to stay inside those gaps, which
+`src/readability.test.ts` guards.
 
 **Props are capped at 4.6 units.** The camera looks down at exactly 45 degrees, so a prop
 of height *h* hides the ground for *h* units directly behind it. The 8-unit pillars M0
@@ -177,13 +186,52 @@ The damage vignette is **proportional** to the hit since M5. A runner's 4 and an
 
 ## Ground
 
-A single plane with a shader-free grid: an 8-unit grid drawn into the ground texture,
-or a large `GridHelper` under a transparent plane. It exists for one reason — with a
-featureless ground and a camera that follows the player exactly, **player movement is
-invisible**. The grid is the motion reference that makes running feel like running.
+Grassland, from a **procedurally generated** tiling texture (`src/scene/terrain.ts`) —
+two tints of stipple over a dusk-green base, at an 8-unit repeat, with a low-frequency
+mottle underneath so the detail survives perspective instead of averaging to a flat
+colour in the distance.
 
-The out-of-bounds band is a darker ring at the world edge, wide enough to see before
-you hit the clamp.
+It exists for one reason, and it is the same reason the thing it replaced existed: with
+a featureless ground and a camera that follows the player exactly, **player movement is
+invisible**. You see the world slide and nothing else. Through M6 the motion reference
+was a faint 8-unit line grid; M7 swapped it for the texture, which does the same job
+continuously rather than once every eight units, and does not put a sci-fi grid on a
+field. The 8-unit scale carried over unchanged, because that was the scale that read
+correctly at this camera distance.
+
+Generated rather than shipped as an image on purpose: this repo is a tutorial about
+importing *your own* art, and a checked-in grass photo would be the one asset in it
+nobody can explain the provenance of. It is also why the ground can be held inside the
+value band below — a JPEG is whatever it is, but a palette is testable.
+
+The out-of-bounds band is a darker plane beyond the world edge, wide enough to see
+before you hit the clamp.
+
+## The boundary
+
+`src/scene/Boundary.tsx`: a nine-unit rampart with a lit cap and battlements, ringed by
+hill silhouettes beyond it. Four instanced draws, no simulation involvement.
+
+The wall's inner face sits **exactly** on the world bound the sim clamps the player to,
+so a cornered player's near edge touches the stone — this is asserted in
+`src/scene/boundaryLayout.test.ts`, because a wall one unit off in either direction
+reads as a bug in the movement code rather than in the scenery.
+
+None of this was needed while the camera was fixed: the view is 40 × 26 units in a
+256 × 256 world, so you almost never saw the edge. The orbit camera is what made the
+place the world stops something a player can point at, and it had to look like a place
+that stops. The hills exist so that looking outward shows a horizon rather than a void.
+
+## Sky
+
+A vertical gradient from the fog colour at the horizon to `#161d2b` at the zenith,
+on a sphere that follows the camera.
+
+It is **darker than the ground**, which is not how daylight works and is exactly right
+here. The first rule below is that the player is the brightest thing on screen; a
+daylit sky is a screenful of pixels brighter than the player, and no amount of tuning
+the cast recovers from that. The palette has always been dusk — the sky is only where
+that finally became visible, because the fixed camera pointed at the floor.
 
 ## UI
 

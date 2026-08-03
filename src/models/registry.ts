@@ -85,10 +85,20 @@ export const ACTORS: Record<ActorId, ActorModel> = {
     tint: COLORS.GRUNT,
   },
   runner: {
-    primitive: () => new THREE.ConeGeometry(0.35, 1.5, 6),
-    height: 1.5,
+    primitive: () => new THREE.ConeGeometry(0.5, 2.1, 6),
+    url: '/models/swift one.glb',
+    // 1.5 until the first real import taught us better: the swift is a slim biped, and at 1.5 it
+    // READ smaller than the 1.4 grunt — normalisation locks bounding heights, not perceived mass,
+    // and the grunt is a squat model nearly as wide as it is tall. So the ladder is now four rungs
+    // and size carries threat outright: grunt 1.4 < runner 2.1 < brute 2.6 < elite 4.5
+    // (ART-STYLE.md, guarded by readability.test.ts).
+    //
+    // 2.1 is the CEILING for this rung, not a taste call: SCALE_JITTER is ±9%, and above ~2.15 the
+    // tallest runner overlaps the shortest brute. Want it bigger still? Raise the brute and elite
+    // with it.
+    height: 2.1,
     scale: 1.0,
-    yOffset: 0.75,
+    yOffset: 1.05,
     tint: COLORS.RUNNER,
   },
   brute: {

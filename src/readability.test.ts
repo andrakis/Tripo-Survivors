@@ -72,6 +72,44 @@ describe('DESIGN §12 rule 1 — the player is the brightest thing on screen', (
     }
   });
 
+  it('keeps every M7 stage addition inside the scenery value band', () => {
+    // The grass, the boundary wall and the sky all arrived at once, and all three are enormous in
+    // screen area — the ground is most of the frame, the wall is the tallest thing in the world, the
+    // sky is the entire top half in orbit mode. Any one of them drifting bright would out-shout the
+    // cast without ever looking wrong on its own, which is the exact failure the M5 prop pass fixed
+    // and the reason this file exists.
+    const prop = luminance(COLORS.PROP);
+    const dimmestActor = Math.min(...CAST.map((id) => luminance(ACTORS[id].tint)));
+
+    // GRASS_LIGHT is the brightest pixel the ground can produce anywhere, so it — not the base
+    // colour — is what has to clear the props. Testing COLORS.GROUND alone would pass while the
+    // texture stippled highlights straight through the ceiling.
+    expect(luminance(COLORS.GRASS_LIGHT), 'the brightest grass out-values the props').toBeLessThan(prop);
+    expect(luminance(COLORS.GRASS_DARK)).toBeLessThan(luminance(COLORS.GROUND));
+    expect(luminance(COLORS.GROUND)).toBeLessThan(luminance(COLORS.GRASS_LIGHT));
+
+    // The wall body is dimmer than the props it shares a palette with; its cap may reach them, since
+    // a lit top edge is the whole reason the cap exists, but neither may reach the cast.
+    expect(luminance(COLORS.WALL)).toBeLessThan(prop);
+    expect(luminance(COLORS.WALL_CAP)).toBeLessThanOrEqual(prop);
+    expect(luminance(COLORS.WALL_CAP)).toBeLessThan(dimmestActor);
+
+    // Hills are BEYOND the wall and must recede: darker than the ground they sit behind, or the eye
+    // reads the horizon as somewhere with more going on than the arena.
+    expect(luminance(COLORS.HILL)).toBeLessThan(luminance(COLORS.GROUND));
+
+    // A daylit sky is a screenful of pixels brighter than the player, and no tuning of the cast
+    // recovers from that. Dusk is not a style choice here; it is what rule 1 costs.
+    expect(luminance(COLORS.SKY_TOP)).toBeLessThan(luminance(COLORS.GROUND));
+  });
+
+  it('keeps the fog exactly on the ground colour, which three things now depend on', () => {
+    // The horizon has to vanish rather than band. Since M7 this identity is load-bearing in a second
+    // place too: the sky shader pins its lower half to FOG so the gradient meets the fogged ground
+    // in the same value from every orbit angle (scene/Sky.tsx).
+    expect(COLORS.FOG).toBe(COLORS.GROUND);
+  });
+
   it('does not let the BIG tiers spend as much chroma as the small ones', () => {
     // Attention is area × chroma, not value alone, which is what the M4 palette got wrong: a 4.5-unit
     // elite at full saturation out-shouts a 1.7-unit player who is strictly brighter than it. Big
@@ -104,14 +142,12 @@ describe('DESIGN §12 rule 2 — tier reads from silhouette and colour', () => {
     // hierarchy that survives a viewer importing models we have never seen — the loader normalises
     // every import to it.
     //
-    // But the ladder is NOT four rungs, and writing this test is what made that explicit. The grunt
-    // (1.4) and the runner (1.5) are seven percent apart and were never meant to be told apart by
-    // size: ART-STYLE separates them by WIDTH (0.8 against 0.7) and hue, and "small" is one rung
-    // that happens to contain two tiers. The rungs that carry information are small → brute → elite,
-    // and those are the gaps the jitter has to stay inside.
+    // The ladder became FOUR rungs when the first real runner import landed. At 1.5 the slim swift
+    // model READ smaller than the squat 1.4 grunt — normalisation locks bounding heights, not
+    // perceived mass — so the runner moved to 2.1 and size now carries threat outright:
+    // grunt → runner → brute → elite. Every gap has to hold the jitter.
     const j = TUNING.SCALE_JITTER;
-    const small = Math.max(ACTORS.grunt.height, ACTORS.runner.height);
-    const rungs = [small, ACTORS.brute.height, ACTORS.elite.height];
+    const rungs = [ACTORS.grunt.height, ACTORS.runner.height, ACTORS.brute.height, ACTORS.elite.height];
     for (let i = 0; i + 1 < rungs.length; i++) {
       // The tallest an enemy on the lower rung can be, against the shortest on the one above it.
       expect(rungs[i] * (1 + j)).toBeLessThan(rungs[i + 1] * (1 - j));
