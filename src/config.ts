@@ -205,6 +205,15 @@ export const TUNING = {
   // the whole death marker on the stagger and no body ever hits the ground.
   VAT_DIE_TRIM: 1.0, // seconds of the clip to bake from VAT_DIE_FROM: the fall, plus enough of the
   // settle that the held final pose is genuinely flat. Safe to cut because a one-shot has no seam.
+  VAT_MB_CEILING: 64, // biggest VAT one actor may allocate. Over it the model stays STATIC with a
+  // line saying so — the same degrade-don't-break rung as everything else in the loader.
+  //
+  // It exists because M6c made the bake automatic: any rigged GLB animates, so nobody opts in and
+  // nobody is asked whether the file in front of them is affordable. Two RGBA-float textures of
+  // vertexCount × frames means the shipped grunt (918 verts, 593 frames) costs 17 MB, while a model
+  // at the elite's 100,000-triangle ceiling would cost ~950 MB and take the tab with it. 64 gives a
+  // heavier or longer-clipped character ~3.5× the grunt's headroom and still refuses the one that
+  // would fail — and the message names decimation and clip count, which are the two dials.
   VAT_IDLE_SPEED: 0.4, // below this an enemy plays `idle`...
   VAT_WALK_SPEED: 2.6, // ...below this, `walk`; above it, `run`. Between a grunt's 3.4 and a brute's
   // 2.2, so the two tiers move differently without either one being told which clip to use.

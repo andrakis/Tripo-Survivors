@@ -15,7 +15,8 @@ and the staged path from "primitive cubes" to "animated crowd of 400".
 |---|---|---|
 | **1 — Primitives** | `THREE.BoxGeometry` etc., built in code | ships, and is the permanent fallback |
 | **2 — Static GLTF** | Your Tripo `.glb`, instanced, unanimated | ✅ [M6a](ROADMAP.md), `src/models/loader.ts` |
-| **3 — VAT** | Your `.glb`, animated, at full crowd count | M6b, ported from Breach |
+| **3 — VAT** | Your `.glb`, animated, at full crowd count — automatic if it is rigged | ✅ [M6b](ROADMAP.md), ported from Breach |
+| **4 — The dialog** | All of the above, reported on screen and replaceable from a file picker | ✅ [M6c](ROADMAP.md), `src/ui/ModelPicker.tsx` |
 
 Each stage is a strict superset of the last, and **stage 1 is always the fallback**.
 If a GLB is missing, fails to load, or violates the contract, the game logs a warning
@@ -193,19 +194,37 @@ The loader warns and keeps going.
 
 ## 6. Stage 3 — animation (VAT) — ✅ shipped (M6b)
 
-**Turning it on is one more line.** A rigged GLB with Tripo's autorig clips, plus:
+**Turning it on is nothing at all.** A rigged GLB animates because it is rigged:
 
 ```diff
   grunt: { primitive: ..., url: '/models/grunt.glb',
-+          animated: true,
            height: 1.4, scale: 1.0, yOffset: 0.7, tint: COLORS.GRUNT },
 ```
 
-At load, a Web Worker bakes the clips into Vertex Animation Textures behind the
-`LOADING MODELS` splash (~1 second for the real grunt), and the crowd animates. If the
-GLB has no skeleton, or no clip matches, the actor stays on its static mesh with a
+That is the whole registry entry. The loader looks for a skeleton in the file, and if it
+finds one it bakes. At load, a Web Worker turns the clips into Vertex Animation Textures
+behind the `LOADING MODELS` splash (~1 second for the real grunt), and the crowd animates.
+If the GLB has no skeleton, or no clip matches, the actor stays on its static mesh with a
 console line saying why — the same degrade-don't-break ladder as everything else:
 **VAT → static GLB → primitive.**
+
+**It was one line until M6c** (`animated: true`), and the flag came out because it made a
+liar of the tutorial. The series spends an episode rigging a model in Tripo, and the
+viewer who finishes it drops the result into the game — or uploads it from the dialog
+(§7) — and it stood there. "Why is my animated character standing still" is the worst
+possible next question, and the answer was a line in a file the episode had not opened.
+
+`animated: false` still exists as an **escape hatch**, for an actor deliberately kept
+static. It is not the switch; there is no switch.
+
+**What replaced the flag is a size guard.** Nobody opts in any more, so nobody has judged
+whether the file in front of the loader is affordable — and a VAT is two RGBA-float
+textures of `vertexCount × frames`. The shipped grunt (918 verts, 593 frames) costs 17 MB;
+a character at the elite's 100,000-triangle ceiling would cost **~950 MB** and take the tab
+with it. So the bake is priced *before* it runs, from the clip durations already in the
+file (`projectVatBytes`), and a model over `TUNING.VAT_MB_CEILING` (64 MB) stays static
+with a line naming the two dials — decimate the mesh, or export fewer clips. Same rung on
+the same ladder: too big to animate costs you the animation, not the game.
 
 **Why not skeletal animation?** Per-instance skeletal skinning costs CPU and a draw
 call *per instance*. It's the right answer for a handful of high-poly characters; it
@@ -297,7 +316,52 @@ preset list verbatim and asserts every one of them has a home.
   takes a **window** (`from`/`trim`), and the registry bakes `defeat` from 2.7 s for
   1.0 s: the fall, ending flat.
 
-## 7. Folder layout
+## 7. Stage 4 — the model dialog — ✅ shipped (M6c)
+
+The first screen of every run is `src/ui/ModelPicker.tsx`: every actor in the registry,
+what it resolved to, and a file picker to replace it.
+
+It exists because of a gap this document had from M6a. The loader has always reported
+exactly what happened to a file — which mesh count it rejected, which clip it could not
+find, which URL 404'd — **into the console**, and a viewer following a tutorial does not
+open the console. The single most likely mistake in this whole pipeline is a file in the
+wrong folder or under the wrong name, and its only symptom was a green box.
+
+So the same `ResolvedActor` records the renderers read now feed a screen, with four
+statuses that send a viewer to four different places:
+
+| Status | Means | What the row says |
+|---|---|---|
+| `loaded` | the GLB is on screen | tris, textured, clip count, VAT size |
+| `missing` | the URL answered **404** | the URL, by name, and that the fallback shape is what you are looking at |
+| `rejected` | it was there and unusable | the specific contract breach (§3), in the loader's own words |
+| `unset` | no `url` in the registry | not a failure — the primitive is the shipped art until somebody names a file |
+
+`missing` is separated from `rejected` by one extra `HEAD` request, made **only after a
+load has already failed**, so the happy path still costs exactly one request. It is worth
+a round trip because "your file is not at that URL" and "your file is there and broken"
+are opposite ends of a viewer's workflow, and `GLTFLoader` reports both the same way.
+
+**Every row draws its model**, fallback included, on a turntable — a baked VAT plays its
+idle, so the animation bake is something you watch rather than a clip count you trust.
+One WebGL context serves all of them, scissored into the rows' rectangles; a canvas per
+row would put the number of live contexts under the control of however many actors the
+registry grows to (`src/ui/ModelPreview.tsx`).
+
+**Uploads go through `loadOne` — the same function, not a copy.** A file picked in the
+dialog is validated, normalised, budgeted and baked by exactly the code it will meet when
+the viewer puts it in `public/models/`, so nothing can pass in the dialog and fail on
+disk. They last for the tab: an object URL, revoked and replaced on the next upload, with
+a REVERT that reloads what the server ships. Persisting multi-megabyte GLBs in the browser
+was considered and left out — the demo is "try your model", not "install your model".
+
+**The dialog is a gate, not an overlay.** `src/App.tsx` does not mount the game canvas
+until START is pressed, and that is what keeps the swap safe: every renderer under
+`scene/` reads its geometry once at mount and holds it imperatively
+([ARCHITECTURE §3](ARCHITECTURE.md)), so the only sound moment to replace one is before
+any of them exists. It also means the run clock does not start while somebody is reading.
+
+## 8. Folder layout
 
 ```
 public/
@@ -317,7 +381,7 @@ Assets are **committed to the repo**. Breach keeps art in a separate gitignored
 files and needs `git clone && npm i && npm run dev` to produce a complete, textured
 game with no asset step. Different constraints, different answer.
 
-## 8. Tutorial checkpoints
+## 9. Tutorial checkpoints
 
 The stages map onto natural tutorial episodes, each independently demoable:
 
@@ -328,5 +392,9 @@ The stages map onto natural tutorial episodes, each independently demoable:
    and the facing/feet gotchas (§3), which is where real viewers will get stuck.
 4. **"Props"** — arena obstacles; introduces instancing a second population.
 5. **"It moves"** — rigged export, VAT bake, an animated crowd of 400.
+6. **"Try it without editing anything"** — the model dialog: upload a .glb from the
+   startup screen, watch it validate, normalise and bake, and play a run with it. The
+   episode that needs no code at all, and the one that shows what a *failed* import looks
+   like on purpose (§7).
 
 Each checkpoint is a working game. None of them requires the next one to exist.

@@ -601,8 +601,9 @@ other six models.
       attacks while the crowd behind it does not — read off the live `aVatRow`
       attribute through a new dev-only `__r3f` seam.
 - [ ] **Rigged exports for the other tiers — blocked on assets**, deliberately: the
-      remaining cast is the tutorial's exercise for the viewer. Each is
-      `url` + `animated: true` in the registry once the model exists.
+      remaining cast is the tutorial's exercise for the viewer. Each was `url` +
+      `animated: true` in the registry once the model existed — since M6c it is `url`
+      alone, or nothing at all if the viewer only wants to try it from the dialog.
 
 **Done when:** 400 animated enemies run at 60 fps and the bake is invisible to the
 player. **Both verified** — 60 fps at cap over three consecutive 86/86 runs, and the
@@ -641,6 +642,79 @@ bake reports progress into the splash rather than freezing it.
   exactly the matrix the static path bakes into its geometry, so the model cannot change
   size on its first animated frame — that invariant cost one returned value in M6a and
   removed a whole class of bug here.
+
+### 6c — the model dialog, and animation without a flag ✅ done (2026-08-03)
+
+The milestone that came out of using M6a/M6b rather than out of planning them: every
+report the loader produced went to the **console**, and a viewer following a tutorial
+does not open the console. A misnamed file — the likeliest mistake in the whole pipeline
+— presented as a green box and nothing else.
+
+- [x] `src/ui/ModelPicker.tsx` — the startup screen: every actor in the registry, what it
+      resolved to, and a file picker per row. The same `ResolvedActor` records the
+      renderers read, so the dialog and the game cannot disagree about what loaded.
+- [x] Four statuses, four different sentences: `loaded`, `missing` (**404**, named),
+      `rejected` (the contract breach, in the loader's own words), `unset` (no `url` —
+      not a failure). `missing` is separated from `rejected` by one `HEAD` request made
+      only after a load has already failed, so the happy path costs nothing.
+- [x] `src/ui/ModelPreview.tsx` — every row draws its model on a turntable, fallback
+      included, with a baked VAT playing its idle. One WebGL context, scissored into the
+      rows' rectangles.
+- [x] Uploads run through `loadOne` — the same function, not a copy — so a file that
+      works in the dialog works in `public/models/`. Object URLs, revoked on replace,
+      with REVERT to go back to what the server ships. Session-scoped by choice: the demo
+      is "try your model", not "install your model".
+- [x] **`animated: true` deleted from the registry.** A rigged GLB animates because it is
+      rigged, in both paths — the tutorial spends an episode rigging a model in Tripo, and
+      the result has to drop straight into the dialog and move. `animated: false` remains
+      as an escape hatch for an actor deliberately kept static.
+- [x] `TUNING.VAT_MB_CEILING` (64 MB) and `projectVatBytes` — the guard the flag used to
+      be. Nobody opts in now, so nobody has judged whether a file is affordable; the bake
+      is priced from the clip durations before it runs, and a model over the ceiling stays
+      static with a line naming the two dials (decimate, or fewer clips).
+- [x] A **gate**, not an overlay (`src/App.tsx`): the game canvas does not mount until
+      START. That is what keeps swapping a model safe, since every renderer reads its
+      geometry once at mount and holds it imperatively.
+- [x] `src/ui/modelRows.test.ts` — the wording, as assertions. The dialog is the only
+      place a viewer is told their file 404'd, so what it says is the feature.
+- [x] `npm run verify` walks the dialog like a viewer — waits for it, counts its rows,
+      clicks START — rather than bypassing it with a flag.
+
+**Done when:** a viewer can tell, without opening the console, which of their models
+loaded and which did not — and can try one without editing a file. Both done.
+
+### What M6c learned
+
+- **"A canvas exists" stopped meaning "the game is running."** The dialog draws
+  turntables, so every readiness wait in the harness matched the wrong canvas and the
+  first run clicked START into a page that was still the dialog. The game's canvas now
+  carries `data-game`. Sixth entry in the harness-disturbs-the-measurement series, and
+  the second one caused by something appearing *before* the game.
+- **A `<Canvas>` that cannot get a WebGL context throws, and takes the React tree with
+  it.** Pre-existing — the game's canvas has always done this — but the dialog inherits
+  it, which means the screen built to explain failures is itself blank on a machine with
+  no WebGL. Not fixed here; worth an error boundary if the tutorial ever ships to an
+  audience that might hit it.
+- **Never diagnose from one measurement.** Seven per-row canvases failed to get contexts
+  under `scripts/shot.mjs`, which looked exactly like the browser's context cap; the
+  single-canvas rewrite failed identically, and so did the **unmodified** baseline. The
+  box simply has no headless WebGL. The rewrite was kept on its own merits — the context
+  count should not be set by how many actors the registry grows to — but the reason
+  written in the file first was fiction, and it took one control run to find that out.
+- **The `animated` flag was the wrong shape, and the dialog is what exposed it.** Only
+  `grunt` carried it, so a rigged model uploaded to any other slot loaded perfectly and
+  stood still. The first fix was a hint in the row telling the viewer which line to add —
+  which preserved consistency between the dialog and `public/models/` and was still
+  wrong, because the tutorial spends an episode on rigging and the payoff cannot be a
+  config file. Auto-baking anything skinned in **both** paths keeps the consistency and
+  deletes the question.
+- **Removing an opt-in means adding a guard.** The flag was also, accidentally, the place
+  someone decided a model was worth its VRAM. A VAT is two float textures of
+  vertexCount × frames — the grunt costs 17 MB, a character at the elite's triangle
+  ceiling would cost ~950 MB — so making the bake automatic without pricing it first
+  would have turned "I rigged a heavy model" into a dead tab. The projection is arithmetic
+  on clip durations the file already carries, and a unit test asserts it agrees with what
+  the bake then allocates.
 
 ---
 

@@ -32,13 +32,20 @@ export interface ActorModel {
    */
   yaw?: number;
   /**
-   * Stage 3 (M6b): bake this actor's clips into a Vertex Animation Texture and animate the crowd.
+   * Stage 3: bake this actor's clips into a Vertex Animation Texture and animate the crowd.
    *
-   * Requires a RIGGED `url` with named clips — Tripo's bipedal autorig is the intended source. If the
-   * GLB has no skeleton, or none of the clips below match, the actor falls back to the static mesh
-   * (and that falls back to the primitive), so turning this on can only ever cost you animation.
+   * **Leave it out.** Since M6c the loader decides: a GLB with a skeleton is baked and animates, one
+   * without stays static. A viewer who has just rigged a model in Tripo drops it in — or uploads it
+   * from the startup dialog — and it moves, with no line here and nothing to know about.
    *
-   * The clip names are matched case-insensitively as SUBSTRINGS, which is what lets one line cover
+   * Set it to `false` to force an actor to stay static. The escape hatch, not the switch: a VAT costs
+   * vertexCount × frames of texture, so a very heavy model is worth refusing on purpose rather than
+   * paying for. The loader also refuses one over TUNING.VAT_MB_CEILING on its own.
+   *
+   * `true` is accepted and means the same as leaving it out — a rig is still required, because there
+   * is nothing to bake without one.
+   *
+   * The clip names are matched case-insensitively as SUBSTRINGS, which is what lets the table cover
    * `Armature|preset:biped:run` without the viewer having to type it. See MODEL-PIPELINE §6.
    */
   animated?: boolean;
@@ -67,11 +74,11 @@ export const ACTORS: Record<ActorId, ActorModel> = {
     // THE ONE LINE. Delete it (or rename the file) and the grunt is a green box again, with a
     // warning in the console — nothing else in the codebase changes either way.
     url: '/models/grunt.glb',
-    // THE SECOND LINE. Tripo's autorig ships `idle`, `walk`, `run` and `defeat` clips inside the same
-    // GLB; this bakes them into a VAT at load and the crowd animates (MODEL-PIPELINE §6). Those four
-    // are only the first choice — every preset Tripo offers is sorted into one of the game's five
-    // slots, so a rig built from any other subset animates too (CLIP_SPECS in models/loader.ts).
-    animated: true,
+    // THERE IS NO SECOND LINE. This GLB carries Tripo's autorig and its preset clips, and the loader
+    // bakes them into a VAT at load because it found a skeleton — not because anything here asked
+    // (MODEL-PIPELINE §6). `idle`, `walk`, `run` and `defeat` are only the first choice: every preset
+    // Tripo offers is sorted into one of the game's five slots, so a rig built from any other subset
+    // animates too (CLIP_SPECS in models/loader.ts).
     height: 1.4,
     scale: 1.0,
     yOffset: 0.7,

@@ -5,6 +5,11 @@ import { loadActors } from './models/loader';
 
 // Models are resolved BEFORE the first render, not swapped in afterwards.
 //
+// From M6c the first thing rendered is the model dialog (ui/ModelPicker.tsx), which reports what
+// that resolve produced and lets a viewer replace any of it with a file of their own. It changes
+// nothing here: the dialog reads the SAME resolved records, and it is a gate, so the game's
+// renderers still mount exactly once, after every model is final.
+//
 // The alternative — render primitives immediately and hot-swap each geometry as its GLB arrives — is
 // less code and worse: the first second of every run would be cubes turning into monsters, which is
 // exactly the transformation this project exists to sell and precisely the wrong moment to spend it.

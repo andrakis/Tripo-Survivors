@@ -180,14 +180,43 @@ async function hold(keys, ms) {
   return { before, after, dist: Math.hypot(after.x - before.x, after.z - before.z) };
 }
 
+/**
+ * Get past the model dialog and into a running game.
+ *
+ * From M6c the first screen is the model dialog (src/ui/ModelPicker.tsx) and the game's canvas does
+ * not exist until START is pressed (src/App.tsx). So "a canvas is present" stopped being the same
+ * statement as "the game is running" — the dialog draws turntables of its own — and the wait is on
+ * `canvas[data-game]`, which only the game's own canvas carries.
+ *
+ * The button is clicked rather than bypassed with a flag: it is the path every viewer takes, and a
+ * harness that skips it would never notice the dialog failing to appear at all.
+ *
+ * __game alone is not enough either, and has not been since M6b: the game module evaluates at import
+ * time, before the model load and VAT bake finish, so it exists while the LOADING MODELS overlay
+ * still covers the screen and would swallow every click below.
+ */
+async function enterGame(pg) {
+  await pg.waitForFunction(
+    () => !!document.querySelector('[data-model-start]') && !document.getElementById('boot'),
+    { timeout: 30000 },
+  );
+  const rows = await pg.locator('[data-model-row]').count();
+  await pg.click('[data-model-start]');
+  await pg.waitForFunction(
+    () => !!document.querySelector('canvas[data-game]') && !!window.__game,
+    { timeout: 30000 },
+  );
+  return rows;
+}
+
 await page.goto(url, { waitUntil: 'domcontentloaded' });
-// Canvas present AND the boot splash gone. __game alone is not enough from M6b: the game module
-// evaluates at import time, before the model load + VAT bake finish — so __game exists while the
-// LOADING MODELS overlay still covers the screen and would swallow every click this script makes.
-await page.waitForFunction(
-  () => !!document.querySelector('canvas') && !!window.__game && !document.getElementById('boot'),
-  { timeout: 30000 },
-);
+{
+  const rows = await enterGame(page);
+  // Seven actors in src/models/registry.ts, seven rows. The dialog is the only place a viewer is
+  // told their model 404'd, so a row quietly going missing is a silent regression in the one screen
+  // that exists to prevent silent regressions.
+  check('the model dialog lists every actor before the run starts', rows === 7, `${rows} rows`);
+}
 /**
  * Wait until the sim clock actually advances at ~real time.
  *
@@ -215,7 +244,7 @@ if (!(await waitForRealtimeSim(page))) {
   console.log('  warn  sim never reached real time — movement checks below may be unreliable');
 }
 await page.waitForTimeout(400); // let the camera finish its approach
-await page.click('canvas', { position: { x: 900, y: 400 } }); // focus, on the right half (no stick)
+await page.click('canvas[data-game]', { position: { x: 900, y: 400 } }); // focus, right half (no stick)
 
 /**
  * Answer level-up offers automatically, from the PAGE side.
@@ -309,7 +338,7 @@ check('player is still on screen after crossing the arena', Math.abs(cam.x) < 13
 const touchPage = await browser.newPage({ viewport: { width: 420, height: 860 } });
 touchPage.on('pageerror', (e) => errors.push(`touch pageerror: ${e.message}`));
 await touchPage.goto(`${url}?touch=1`, { waitUntil: 'domcontentloaded' });
-await touchPage.waitForFunction(() => !!window.__game && !document.getElementById('boot'), { timeout: 30000 });
+await enterGame(touchPage);
 await waitForRealtimeSim(touchPage);
 await touchPage.evaluate(() => {
   const p = window.__game.player;

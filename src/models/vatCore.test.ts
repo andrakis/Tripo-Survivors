@@ -10,7 +10,7 @@
 
 import { describe, expect, it } from 'vitest';
 import * as THREE from 'three';
-import { bakeSkinnedMesh, isLoopClip, matchClips, type ClipSpec } from './vatCore';
+import { bakeSkinnedMesh, isLoopClip, matchClips, projectVatBytes, type ClipSpec } from './vatCore';
 
 /**
  * A skinned strip: 4 vertices in a vertical line, rigged to two bones. The lower pair is fully
@@ -367,6 +367,34 @@ describe('clip matching', () => {
     expect(short.clips[0].count).toBe(9); // the full 1 s at 8 fps, one-shot: 8 + 1
     // ...and it starts at the clip's beginning, not at some clamped tail.
     expect(posOf(short, 0, 2).y).toBeCloseTo(2, 4);
+  });
+
+  it('prices a bake before running it, so a model too big to animate never allocates', () => {
+    // The guard that replaced `animated: true` (M6c). Two RGBA-float textures of vertexCount ×
+    // frames — the projection has to agree with what `assembleVat` reports afterwards, or the
+    // ceiling in config.ts is measuring something other than what gets allocated.
+    const entries = [
+      { clip: stillClip('idle', 1), loop: true },
+      { clip: stillClip('die', 0.5), loop: false },
+    ];
+    // At 10 fps: a 1 s loop is 10 frames, a 0.5 s one-shot is 6 (5 + the held final pose).
+    expect(projectVatBytes(100, entries, 10)).toBe(100 * 16 * 32);
+
+    // Linear in both, which is what makes decimation and clip count the two dials the warning names.
+    expect(projectVatBytes(200, entries, 10)).toBe(2 * projectVatBytes(100, entries, 10));
+    expect(projectVatBytes(100, entries.slice(0, 1), 10)).toBeLessThan(projectVatBytes(100, entries, 10));
+
+    // A rig with no clips costs nothing, rather than costing one texture of zero height.
+    expect(projectVatBytes(100, [], 10)).toBe(0);
+  });
+
+  it('projects exactly what the bake then allocates', () => {
+    // Belt and braces: the projection is arithmetic on durations, the bake is a real pass over the
+    // vertices, and the ceiling is only meaningful if they agree.
+    const { mesh, scene } = rig();
+    const entries = [{ clip: swingClip('run', 1), as: 'run', loop: true }];
+    const out = bakeSkinnedMesh(mesh, entries, { fps: 8, root: scene });
+    expect(projectVatBytes(out.vertexCount, entries, 8)).toBe(out.vertexCount * out.totalFrames * 32);
   });
 
   it('classifies unfamiliar clip names sensibly', () => {

@@ -14,8 +14,18 @@ Nothing under `src/scene/`, `src/sim/` or `src/ui/` changes. That is the propert
 registry exists to guarantee.
 
 **Nothing here can break the game.** If a file is missing, malformed, or breaks a rule
-below, the actor falls back to its primitive cube and the console tells you exactly what
-was wrong. You never get a black screen — you get a working game and a sentence.
+below, the actor falls back to its primitive cube and **the startup dialog tells you
+exactly what was wrong** — which file, and whether it was missing or unusable. You never
+get a black screen; you get a working game and a sentence.
+
+## Or skip this folder entirely
+
+The game opens on a list of every actor, what it loaded, and an **upload** button per row.
+Pick a `.glb` there and it replaces that actor for the run — same validation, same scale
+normalisation, same animation bake as a file you ship here, so anything that works in the
+dialog works on disk. It lasts for the tab; REVERT or a reload puts the shipped model back.
+
+Use the dialog to try a model, this folder to keep it.
 
 ---
 
@@ -93,12 +103,13 @@ loader forces `metalness = 0` and logs an `info` line saying so.
 
 ## Animating it
 
-If your GLB is **rigged** — export from Tripo with its autorig and preset clips — one
-more line bakes the clips into a vertex-animation texture at load and the whole crowd
-animates:
+**Nothing to do.** If your GLB is rigged — export from Tripo with its autorig and preset
+clips — the loader finds the skeleton, bakes the clips into a vertex-animation texture at
+load, and the whole crowd animates. Same for a rig you upload from the startup dialog.
+There is no flag, and none to forget.
 
 ```ts
-grunt: { ..., url: '/models/grunt.glb', animated: true },
+grunt: { ..., url: '/models/grunt.glb' },   // that's it — rigged means animated
 ```
 
 The game plays five things (names matched loosely — Tripo's `Armature|preset:biped:run`
@@ -124,7 +135,14 @@ isn't punching in unison.
 Two Tripo quirks are handled for you: baked-in root motion is pinned (your model runs
 on the spot, the game moves it), and the long `defeat` preset is cut down to the part
 where the body actually falls. If the file has no skeleton or no matching clips, the
-model simply stays static and the console says why.
+model simply stays static and the dialog says why.
+
+**The one thing that can stop a rigged model animating is size.** A vertex-animation
+texture costs vertices × frames, so an undecimated character can reach hundreds of
+megabytes. Over 64 MB the model stays static and the dialog tells you what it would have
+cost — decimate the mesh, or export fewer clips. The shipped grunt is 17 MB, so there is
+plenty of room for a heavier character; this is a guard against the file that would crash
+the tab, not a tight budget.
 
 ## Reading the console
 

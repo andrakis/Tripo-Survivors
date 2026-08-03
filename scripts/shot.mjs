@@ -27,13 +27,18 @@ page.on('console', (m) => {
 page.on('pageerror', (e) => errors.push(`pageerror: ${e.message}`));
 
 await page.goto(url, { waitUntil: 'domcontentloaded' });
-await page.waitForFunction(() => !!document.querySelector('canvas'), { timeout: 20000 });
+// The model dialog is the first screen from M6c and the game's canvas does not exist until START is
+// pressed (src/App.tsx), so this shot has to walk through it. `canvas[data-game]` is the game's own
+// canvas — the dialog draws turntables of its own, and waiting on any canvas would capture it.
+await page.waitForSelector('[data-model-start]', { timeout: 20000 });
+await page.click('[data-model-start]');
+await page.waitForSelector('canvas[data-game]', { timeout: 20000 });
 
 // Let the scene settle and the camera finish its approach before sampling anything.
 await page.waitForTimeout(seconds * 1000);
 
 const probe = await page.evaluate(() => {
-  const c = document.querySelector('canvas');
+  const c = document.querySelector('canvas[data-game]');
   const fps = document.body.innerText.match(/(\d+)\s*fps/);
   return { w: c?.width ?? 0, h: c?.height ?? 0, fps: fps ? Number(fps[1]) : null };
 });

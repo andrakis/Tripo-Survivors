@@ -99,7 +99,7 @@ function window(duration: number, loop: boolean, from?: number, trim?: number): 
   return { start, span };
 }
 
-function planFrames(duration: number, fps: number, loop: boolean, from?: number, trim?: number): number {
+export function planFrames(duration: number, fps: number, loop: boolean, from?: number, trim?: number): number {
   const { span } = window(duration, loop, from, trim);
   if (span === 0) return 1; // a single-pose clip
   const base = Math.max(1, Math.round(span * fps));
@@ -110,6 +110,29 @@ function planFrames(duration: number, fps: number, loop: boolean, from?: number,
 function sampleTime(f: number, count: number, w: { start: number; span: number }, loop: boolean): number {
   if (count === 1) return w.start;
   return w.start + (loop ? (f / count) * w.span : (f / (count - 1)) * w.span);
+}
+
+/**
+ * What a bake WOULD cost, in bytes, without doing it.
+ *
+ * The bake is automatic from M6c — any rigged GLB animates, with no registry line to ask for it —
+ * and that makes the size of the thing a viewer's file is about to allocate the loader's problem
+ * rather than the author's. Two RGBA-float textures of `vertexCount × totalFrames`, so the cost is
+ * linear in both and a heavy model with long clips reaches hundreds of megabytes without looking
+ * unusual on disk.
+ *
+ * Takes the entries `matchClips` returned, so it prices exactly the clips that will be baked rather
+ * than every clip in the file.
+ */
+export function projectVatBytes(
+  vertexCount: number,
+  entries: { clip: THREE.AnimationClip; loop: boolean; from?: number; trim?: number }[],
+  fps: number,
+): number {
+  let frames = 0;
+  for (const e of entries) frames += planFrames(e.clip.duration, fps, e.loop, e.from, e.trim);
+  // 4 channels × 4 bytes × 2 textures — the same arithmetic `assembleVat` reports after the fact.
+  return vertexCount * frames * 32;
 }
 
 /**
